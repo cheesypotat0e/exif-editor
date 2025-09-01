@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Client-side EXIF Date Editor (JPEG only)</title>
+    <link rel="stylesheet" href="src/style.css" />
+    <script src="src/main.ts" type="module"></script>
+  </head>
+  <body>
+    <div class="card">
+      <h2>EXIF Date Editor</h2>
+      <p class="muted">
+        This page edits existing EXIF date/time fields in-place
+
+        <p class="muted">
+          It looks for Image DateTime, DateTimeOriginal, DateTimeDigitized,
+          GPSDateStamp, and GPSTimeStamp if present.
+        </p>
+
+        <p class="muted">
+          And reconstructs the EXIF data back into a new JPEG file.
+        </p>
+
+        <ul class="muted list">
+          <li>no server</li>
+          <li>no uploads</li>
+          <li>no external libraries</li>
+          <li>no internet required</li>
+          <li>just HTML and JavaScript</li>
+        </ul>
+
+      </p>
+
+      <div id="uploader" class="upload" tabindex="0">
+        <div id="up-text">
+          Drag & drop a JPEG here, or click to select a file
+        </div>
+        <div class="muted">Only one file at a time. JPEG only.</div>
+        <input
+          id="fileInput"
+          type="file"
+          accept="image/jpeg"
+          style="display: none"
+        />
+      </div>
+
+      <div style="height: 14px"></div>
+
+      <div id="main" class="meta" style="display: none">
+        <div
+          style="
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+          "
+        >
+          <img id="preview" class="preview" alt="preview" />
+          <div id="preview-info" class="muted">
+            <div id="preview-info-text"></div>
+          </div>
+          <div id="filename" class="muted"></div>
+        </div>
+        <form id="fields"></form>
+      </div>
+
+      <div
+        class="actions"
+        style="
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        "
+      >
+        <div id="status" class="muted">No file loaded</div>
+        <div>
+          <button id="clearBtn" class="ghost" disabled>Clear</button>
+          <button id="downloadBtn" class="primary" disabled>Download</button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

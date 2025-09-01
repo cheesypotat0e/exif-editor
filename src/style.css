@@ -1,0 +1,108 @@
+:root {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial;
+}
+body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 28px;
+  gap: 18px;
+  background: #f7f7fb;
+  color: #111;
+}
+.card {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 6px 22px rgba(10, 10, 20, 0.06);
+  padding: 18px;
+  width: 760px;
+  max-width: 96%;
+}
+.upload {
+  border: 2px dashed #cbd5e1;
+  border-radius: 10px;
+  padding: 18px;
+  text-align: center;
+  cursor: pointer;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.upload.dragover {
+  background: #eef6ff;
+  border-color: #7aa7ff;
+}
+img.preview {
+  max-width: 220px;
+  max-height: 160px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+.meta {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+}
+form#fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+}
+.row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+label {
+  min-width: 160px;
+  font-weight: 600;
+}
+input[type="text"],
+input[type="datetime-local"],
+input[type="date"] {
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  min-width: 200px;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+button {
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 0;
+  cursor: pointer;
+}
+button.primary {
+  background: #2563eb;
+  color: white;
+}
+button.ghost {
+  background: #eef2ff;
+  color: #3730a3;
+}
+.muted {
+  color: #6b7280;
+  font-size: 13px;
+}
+pre {
+  white-space: pre-wrap;
+  font-size: 13px;
+}
+
+.list {
+  list-style-type: square;
+  display: flex;
+  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+}
