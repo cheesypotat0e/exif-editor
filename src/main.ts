@@ -257,6 +257,8 @@ function renderFields(fields: EXIFField[]) {
     } else if (f.type === "time") {
       input = document.createElement("input");
       input.type = "time";
+      input.step = "1";
+      input.placeholder = "HH:MM:SS";
 
       // Convert EXIF time (UTC) to local time before setting input value
       const utcTime = toInputTime(f.value as number[]);
@@ -325,6 +327,7 @@ function renderFields(fields: EXIFField[]) {
       input = document.createElement("input");
       input.type = "datetime-local";
       input.step = "1";
+      input.placeholder = "YYYY-MM-DDTHH:MM:SS";
       input.value = toInputDateTime(f.value as string);
     }
 
