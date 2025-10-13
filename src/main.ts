@@ -58,6 +58,25 @@ const filenameEl = document.getElementById("filename") as HTMLDivElement;
 const clearBtn = document.getElementById("clearBtn") as HTMLButtonElement;
 const downloadBtn = document.getElementById("downloadBtn") as HTMLButtonElement;
 
+// Feature detection
+function supportsDateTimeLocal(): boolean {
+  const input = document.createElement("input");
+  input.setAttribute("type", "datetime-local");
+  // Older Safari returns 'text' if unsupported
+  return input.type === "datetime-local";
+}
+const HAS_DATETIME_LOCAL_SUPPORT = supportsDateTimeLocal();
+
+function isIOSWebKit(): boolean {
+  const ua = navigator.userAgent || "";
+  const isIOSDevice = /iP(hone|ad|od)/.test(ua) ||
+    // iPadOS 13+ reports as Macintosh with touch
+    (/(Macintosh)/.test(ua) && "ontouchend" in document);
+  return isIOSDevice;
+}
+
+const NEEDS_DATETIME_FALLBACK = !HAS_DATETIME_LOCAL_SUPPORT || isIOSWebKit();
+
 // drag/drop
 uploader.addEventListener("click", () => fileInput.click());
 
@@ -255,14 +274,8 @@ function renderFields(fields: EXIFField[]) {
 
       input.value = localDateValue;
     } else if (f.type === "time") {
-      input = document.createElement("input");
-      input.type = "time";
-      input.step = "1";
-      input.placeholder = "HH:MM:SS";
-
       // Convert EXIF time (UTC) to local time before setting input value
       const utcTime = toInputTime(f.value as number[]);
-
       let localTime = "";
 
       if (utcTime) {
@@ -322,13 +335,140 @@ function renderFields(fields: EXIFField[]) {
         }
       }
 
+      if (isIOSWebKit()) {
+        // iOS pickers typically don't expose seconds - add explicit control and hidden combined
+        const wrapper = row;
+
+        const timeOnly = (localTime || "00:00:00").split(":");
+        const hhmm = `${timeOnly[0] || "00"}:${timeOnly[1] || "00"}`;
+        const ss = timeOnly[2] || "00";
+
+        const timeInput = document.createElement("input");
+        timeInput.type = "time";
+        timeInput.step = "1";
+        timeInput.placeholder = "HH:MM";
+        timeInput.value = hhmm;
+        timeInput.dataset.idx = idx.toString();
+        timeInput.dataset.part = "time";
+
+        const secInput = document.createElement("input");
+        secInput.type = "number";
+        secInput.inputMode = "numeric";
+        secInput.min = "0";
+        secInput.max = "59";
+        secInput.placeholder = "SS";
+        secInput.value = String(parseInt(ss, 10) || 0);
+        secInput.style.width = "72px";
+        secInput.dataset.idx = idx.toString();
+        secInput.dataset.part = "seconds";
+
+        const hidden = document.createElement("input");
+        hidden.type = "hidden";
+        hidden.dataset.idx = idx.toString();
+
+        const updateHidden = () => {
+          const [h = "00", m = "00"] = (timeInput.value || "").split(":");
+          let seconds = Number(secInput.value);
+          if (!isFinite(seconds) || seconds < 0) seconds = 0;
+          if (seconds > 59) seconds = 59;
+          const sstr = String(seconds).padStart(2, "0");
+          hidden.value = `${h || "00"}:${m || "00"}:${sstr}`;
+        };
+        timeInput.addEventListener("input", updateHidden);
+        secInput.addEventListener("input", updateHidden);
+        updateHidden();
+
+        wrapper.appendChild(label);
+        wrapper.appendChild(timeInput);
+        wrapper.appendChild(secInput);
+        wrapper.appendChild(hidden);
+        fieldsForm.appendChild(wrapper);
+        return;
+      }
+
+      input = document.createElement("input");
+      input.type = "time";
+      input.step = "1";
+      input.placeholder = "HH:MM:SS";
       input.value = localTime;
     } else {
-      input = document.createElement("input");
-      input.type = "datetime-local";
-      input.step = "1";
-      input.placeholder = "YYYY-MM-DDTHH:MM:SS";
-      input.value = toInputDateTime(f.value as string);
+      // datetime
+      if (!NEEDS_DATETIME_FALLBACK) {
+        input = document.createElement("input");
+        input.type = "datetime-local";
+        input.step = "1";
+        input.placeholder = "YYYY-MM-DDTHH:MM:SS";
+        input.value = toInputDateTime(f.value as string);
+        input.dataset.idx = idx.toString();
+        row.appendChild(label);
+        row.appendChild(input);
+        fieldsForm.appendChild(row);
+        return;
+      }
+
+      // Fallback for platforms without datetime-local: split into date and time inputs
+      const wrapper = row;
+
+      const dt = toInputDateTime(f.value as string);
+      const [datePart, timePartRaw] = (dt || "").split("T");
+      const timePart = (timePartRaw || "00:00:00").split(":").slice(0, 3).join(":");
+
+      const dateInput = document.createElement("input");
+      dateInput.type = "date";
+      dateInput.value = datePart || "";
+      dateInput.placeholder = "YYYY-MM-DD";
+      dateInput.dataset.idx = idx.toString();
+      dateInput.dataset.part = "date";
+
+      const timeInput = document.createElement("input");
+      timeInput.type = "time";
+      timeInput.step = "1";
+      timeInput.value = timePart || "00:00:00";
+      timeInput.placeholder = "HH:MM:SS";
+      timeInput.dataset.idx = idx.toString();
+      timeInput.dataset.part = "time";
+
+      // Explicit seconds input to ensure editability on platforms that hide seconds (e.g., iOS)
+      const secondsInput = document.createElement("input");
+      secondsInput.type = "number";
+      secondsInput.inputMode = "numeric";
+      secondsInput.min = "0";
+      secondsInput.max = "59";
+      secondsInput.placeholder = "SS";
+      const initialSeconds = (timePart.split(":")[2] ?? "00");
+      secondsInput.value = String(parseInt(initialSeconds, 10) || 0);
+      secondsInput.style.width = "72px";
+
+      // Hidden combined input used for saving
+      const hidden = document.createElement("input");
+      hidden.type = "hidden";
+      hidden.dataset.idx = idx.toString();
+
+      const updateHidden = () => {
+        const d = dateInput.value || "";
+        let [h = "00", m = "00", s = "00"] = (timeInput.value || "").split(":");
+        // Normalize seconds from the dedicated control if present
+        let secNum = Number(secondsInput.value);
+        if (!isFinite(secNum) || secNum < 0) secNum = 0;
+        if (secNum > 59) secNum = 59;
+        const sstr = String(secNum).padStart(2, "0");
+        const t = `${h || "00"}:${m || "00"}:${sstr}`;
+        hidden.value = d ? `${d}T${t}` : "";
+      };
+      dateInput.addEventListener("input", updateHidden);
+      timeInput.addEventListener("input", updateHidden);
+      secondsInput.addEventListener("input", updateHidden);
+      updateHidden();
+
+      input = hidden; // for consistent dataset handling below
+
+      wrapper.appendChild(label);
+      wrapper.appendChild(dateInput);
+      wrapper.appendChild(timeInput);
+      wrapper.appendChild(secondsInput);
+      wrapper.appendChild(hidden);
+      fieldsForm.appendChild(wrapper);
+      return;
     }
 
     input.dataset.idx = idx.toString();
@@ -439,6 +579,10 @@ function downloadModified(filename: string) {
   const dv = new DataView(workingBuffer);
 
   inputs.forEach((inp: HTMLInputElement) => {
+    // Ignore split controls for datetime fallback; the hidden combined input will be processed
+    if (inp.dataset && inp.dataset.part) {
+      return;
+    }
     const idx = Number(inp.dataset.idx);
 
     const field = parsedFields[idx];
