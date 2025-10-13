@@ -64,11 +64,19 @@ label {
 }
 input[type="text"],
 input[type="datetime-local"],
-input[type="date"] {
+input[type="date"],
+input[type="time"] {
   padding: 8px;
   border-radius: 8px;
   border: 1px solid #d1d5db;
   min-width: 200px;
+}
+
+/* seconds numeric input (compact) */
+input[type="number"] {
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
 }
 .actions {
   display: flex;
