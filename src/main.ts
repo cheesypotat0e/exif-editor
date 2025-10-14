@@ -446,7 +446,7 @@ function renderFields(fields: EXIFField[]) {
 
       const updateHidden = () => {
         const d = dateInput.value || "";
-        let [h = "00", m = "00", s = "00"] = (timeInput.value || "").split(":");
+        let [h = "00", m = "00"] = (timeInput.value || "").split(":");
         // Normalize seconds from the dedicated control if present
         let secNum = Number(secondsInput.value);
         if (!isFinite(secNum) || secNum < 0) secNum = 0;
