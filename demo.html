@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Custom DateTime Picker Demo</title>
+    <link rel="stylesheet" href="src/custom-datetime-picker.css">
+    <style>
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f7f7fb;
+        }
+        
+        .demo-section {
+            background: white;
+            padding: 24px;
+            margin: 20px 0;
+            border-radius: 12px;
+            box-shadow: 0 6px 22px rgba(10, 10, 20, 0.06);
+        }
+        
+        .demo-title {
+            margin: 0 0 16px 0;
+            color: #1f2937;
+            font-size: 18px;
+            font-weight: 600;
+        }
+        
+        .demo-description {
+            color: #6b7280;
+            margin-bottom: 20px;
+            line-height: 1.5;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 12px;
+            margin: 16px 0;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            background: white;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        
+        .btn:hover {
+            background: #f3f4f6;
+        }
+        
+        .btn-primary {
+            background: #2563eb;
+            color: white;
+            border-color: #2563eb;
+        }
+        
+        .btn-primary:hover {
+            background: #1d4ed8;
+        }
+        
+        .output {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 12px;
+            margin-top: 16px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+        }
+        
+        .input-demo {
+            margin: 16px 0;
+        }
+        
+        .input-demo input {
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            width: 300px;
+            font-size: 14px;
+        }
+        
+        .input-demo label {
+            display: block;
+            margin-bottom: 4px;
+            font-weight: 500;
+            color: #374151;
+        }
+    </style>
+</head>
+<body>
+    <h1>Custom DateTime Picker Demo</h1>
+    <p>A simple, cross-browser compatible date-time picker using basic HTML input elements.</p>
+
+    <div class="demo-section">
+        <h2 class="demo-title">Basic DateTime Picker</h2>
+        <p class="demo-description">
+            This picker uses separate inputs for year, month, day, hour, minute, and second.
+            It includes validation and supports both ISO and EXIF date formats.
+        </p>
+        <div id="picker1"></div>
+        
+        <div class="controls">
+            <button class="btn btn-primary" onclick="setCurrentDateTime()">Set Current Time</button>
+            <button class="btn" onclick="setExampleDateTime()">Set Example Date</button>
+            <button class="btn" onclick="clearPicker()">Clear</button>
+        </div>
+        
+        <div class="output" id="output1">Value will appear here...</div>
+    </div>
+
+    <div class="demo-section">
+        <h2 class="demo-title">EXIF Format Picker (No Seconds)</h2>
+        <p class="demo-description">
+            This version is configured for EXIF format (YYYY:MM:DD HH:MM:SS) and hides the seconds input.
+        </p>
+        <div id="picker2"></div>
+        
+        <div class="controls">
+            <button class="btn btn-primary" onclick="setExifDateTime()">Set EXIF Example</button>
+            <button class="btn" onclick="clearPicker2()">Clear</button>
+        </div>
+        
+        <div class="output" id="output2">Value will appear here...</div>
+    </div>
+
+    <div class="demo-section">
+        <h2 class="demo-title">String Input Test</h2>
+        <p class="demo-description">
+            Test parsing various date-time string formats by entering them below.
+        </p>
+        
+        <div class="input-demo">
+            <label for="dateInput">Enter a date-time string:</label>
+            <input type="text" id="dateInput" placeholder="e.g., 2024-03-15T14:30:45 or 2024:03:15 14:30:45">
+            <button class="btn btn-primary" onclick="parseInputString()">Parse & Set</button>
+        </div>
+        
+        <div id="picker3"></div>
+        <div class="output" id="output3">Parsed value will appear here...</div>
+    </div>
+
+    <script type="module">
+        import { CustomDateTimePicker } from './src/custom-datetime-picker.js';
+
+        // Global references for demo functions
+        window.picker1 = null;
+        window.picker2 = null;
+        window.picker3 = null;
+
+        // Initialize pickers
+        window.picker1 = new CustomDateTimePicker({
+            container: document.getElementById('picker1'),
+            format: 'iso',
+            showSeconds: true,
+            onChange: (value) => {
+                const output = document.getElementById('output1');
+                if (value) {
+                    const isoString = window.picker1.getValueAsString();
+                    output.textContent = `Value: ${JSON.stringify(value, null, 2)}\nISO String: ${isoString}`;
+                } else {
+                    output.textContent = 'Invalid or incomplete date-time';
+                }
+            },
+            onValidationError: (errors) => {
+                if (errors.length > 0) {
+                    console.log('Validation errors:', errors);
+                }
+            }
+        });
+
+        window.picker2 = new CustomDateTimePicker({
+            container: document.getElementById('picker2'),
+            format: 'exif',
+            showSeconds: false,
+            onChange: (value) => {
+                const output = document.getElementById('output2');
+                if (value) {
+                    const exifString = window.picker2.getValueAsString();
+                    output.textContent = `Value: ${JSON.stringify(value, null, 2)}\nEXIF String: ${exifString}`;
+                } else {
+                    output.textContent = 'Invalid or incomplete date-time';
+                }
+            }
+        });
+
+        window.picker3 = new CustomDateTimePicker({
+            container: document.getElementById('picker3'),
+            format: 'iso',
+            showSeconds: true,
+            onChange: (value) => {
+                const output = document.getElementById('output3');
+                if (value) {
+                    const isoString = window.picker3.getValueAsString();
+                    output.textContent = `Parsed Value: ${JSON.stringify(value, null, 2)}\nISO String: ${isoString}`;
+                } else {
+                    output.textContent = 'Invalid or incomplete date-time';
+                }
+            }
+        });
+
+        // Demo functions
+        window.setCurrentDateTime = () => {
+            const now = new Date();
+            window.picker1.setValue({
+                year: now.getFullYear(),
+                month: now.getMonth() + 1,
+                day: now.getDate(),
+                hour: now.getHours(),
+                minute: now.getMinutes(),
+                second: now.getSeconds()
+            });
+        };
+
+        window.setExampleDateTime = () => {
+            window.picker1.setValue({
+                year: 2024,
+                month: 3,
+                day: 15,
+                hour: 14,
+                minute: 30,
+                second: 45
+            });
+        };
+
+        window.clearPicker = () => {
+            window.picker1.clear();
+        };
+
+        window.setExifDateTime = () => {
+            window.picker2.setValueFromString('2024:03:15 14:30:45');
+        };
+
+        window.clearPicker2 = () => {
+            window.picker2.clear();
+        };
+
+        window.parseInputString = () => {
+            const input = document.getElementById('dateInput').value;
+            if (input.trim()) {
+                window.picker3.setValueFromString(input.trim());
+            }
+        };
+
+        // Set initial values
+        window.setCurrentDateTime();
+        window.setExifDateTime();
+    </script>
+</body>
+</html>
