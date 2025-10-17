@@ -105,7 +105,7 @@
         <h2 class="demo-title">Basic DateTime Picker</h2>
         <p class="demo-description">
             This picker uses separate inputs for year, month, day, hour, minute, and second.
-            It includes validation and supports both ISO and EXIF date formats.
+            It includes validation and always outputs EXIF date format (YYYY:MM:DD HH:MM:SS).
         </p>
         <div id="picker1"></div>
         
@@ -119,9 +119,9 @@
     </div>
 
     <div class="demo-section">
-        <h2 class="demo-title">EXIF Format Picker (No Seconds)</h2>
+        <h2 class="demo-title">DateTime Picker (No Seconds)</h2>
         <p class="demo-description">
-            This version is configured for EXIF format (YYYY:MM:DD HH:MM:SS) and hides the seconds input.
+            This version hides the seconds input but still outputs EXIF format (YYYY:MM:DD HH:MM:SS).
         </p>
         <div id="picker2"></div>
         
@@ -160,13 +160,12 @@
         // Initialize pickers
         window.picker1 = new CustomDateTimePicker({
             container: document.getElementById('picker1'),
-            format: 'iso',
             showSeconds: true,
             onChange: (value) => {
                 const output = document.getElementById('output1');
                 if (value) {
-                    const isoString = window.picker1.getValueAsString();
-                    output.textContent = `Value: ${JSON.stringify(value, null, 2)}\nISO String: ${isoString}`;
+                    const exifString = window.picker1.getValueAsString();
+                    output.textContent = `Value: ${JSON.stringify(value, null, 2)}\nEXIF String: ${exifString}`;
                 } else {
                     output.textContent = 'Invalid or incomplete date-time';
                 }
@@ -180,7 +179,6 @@
 
         window.picker2 = new CustomDateTimePicker({
             container: document.getElementById('picker2'),
-            format: 'exif',
             showSeconds: false,
             onChange: (value) => {
                 const output = document.getElementById('output2');
@@ -195,13 +193,12 @@
 
         window.picker3 = new CustomDateTimePicker({
             container: document.getElementById('picker3'),
-            format: 'iso',
             showSeconds: true,
             onChange: (value) => {
                 const output = document.getElementById('output3');
                 if (value) {
-                    const isoString = window.picker3.getValueAsString();
-                    output.textContent = `Parsed Value: ${JSON.stringify(value, null, 2)}\nISO String: ${isoString}`;
+                    const exifString = window.picker3.getValueAsString();
+                    output.textContent = `Parsed Value: ${JSON.stringify(value, null, 2)}\nEXIF String: ${exifString}`;
                 } else {
                     output.textContent = 'Invalid or incomplete date-time';
                 }

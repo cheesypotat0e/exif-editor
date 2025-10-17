@@ -1,12 +1,12 @@
 # Custom DateTime Picker
 
-A simple, cross-browser compatible date-time picker component built with vanilla HTML, CSS, and TypeScript. No external dependencies required.
+A simple, cross-browser compatible date-time picker component built with vanilla HTML, CSS, and TypeScript. Specifically designed for EXIF metadata editing. No external dependencies required.
 
 ## Features
 
 - ✅ **Cross-browser compatible** - Works consistently across all modern browsers
 - ✅ **No external dependencies** - Pure HTML, CSS, and JavaScript
-- ✅ **Multiple format support** - ISO 8601 and EXIF formats
+- ✅ **EXIF format support** - Always outputs EXIF format (YYYY:MM:DD HH:MM:SS)
 - ✅ **Validation** - Built-in input validation with error messages
 - ✅ **Customizable** - Show/hide seconds, set year ranges, custom styling
 - ✅ **Accessible** - Proper labels and keyboard navigation
@@ -41,7 +41,6 @@ import { CustomDateTimePicker } from './src/custom-datetime-picker.js';
 
 const picker = new CustomDateTimePicker({
     container: document.getElementById('my-picker'),
-    format: 'iso', // or 'exif'
     showSeconds: true,
     onChange: (value) => {
         console.log('Date changed:', value);
@@ -67,8 +66,8 @@ const currentValue = picker.getCurrentValue();
 console.log(currentValue); // { year: 2024, month: 3, day: 15, ... }
 
 // Get as formatted string
-const isoString = picker.getValueAsString();
-console.log(isoString); // "2024-03-15T14:30:45"
+const exifString = picker.getValueAsString();
+console.log(exifString); // "2024:03:15 14:30:45"
 
 // Parse from string
 picker.setValueFromString('2024-12-25T09:30:15');
@@ -81,10 +80,9 @@ picker.setValueFromString('2024-12-25T09:30:15');
 ```typescript
 interface DateTimePickerOptions {
     container: HTMLElement;        // Required: DOM element to render into
-    initialValue?: string;         // Optional: Initial datetime string
+    initialValue?: string;         // Optional: Initial EXIF datetime string
     onChange?: (value: DateTimeValue | null) => void;
     onValidationError?: (errors: string[]) => void;
-    format?: 'iso' | 'exif';      // Default: 'iso'
     showSeconds?: boolean;         // Default: true
     minYear?: number;             // Default: 1900
     maxYear?: number;             // Default: 2100
@@ -118,25 +116,23 @@ interface DateTimeValue {
 
 ## Format Support
 
-### ISO Format (`format: 'iso'`)
-- **Output**: `YYYY-MM-DDTHH:MM:SS` (e.g., `2024-03-15T14:30:45`)
-- **Use case**: Standard web applications, APIs, databases
-
-### EXIF Format (`format: 'exif'`)
+The picker always outputs **EXIF format**:
 - **Output**: `YYYY:MM:DD HH:MM:SS` (e.g., `2024:03:15 14:30:45`)
-- **Use case**: EXIF metadata, camera timestamps
+- **Use case**: EXIF metadata, camera timestamps, image file metadata
+
+This format is specifically designed for EXIF date/time fields in image metadata.
 
 ## String Parsing
 
 The picker can parse various datetime string formats:
 
 ```javascript
-// ISO formats
+// EXIF format (primary)
+picker.setValueFromString('2024:03:15 14:30:45');
+
+// ISO formats (fallback support)
 picker.setValueFromString('2024-03-15T14:30:45');
 picker.setValueFromString('2024-03-15 14:30:45');
-
-// EXIF format
-picker.setValueFromString('2024:03:15 14:30:45');
 
 // Other formats (uses Date constructor as fallback)
 picker.setValueFromString('March 15, 2024 2:30:45 PM');
@@ -205,7 +201,6 @@ const picker = new CustomDateTimePicker({
 ```javascript
 const exifPicker = new CustomDateTimePicker({
     container: document.getElementById('exif-picker'),
-    format: 'exif',
     initialValue: '2024:03:15 14:30:45',
     onChange: (value) => {
         // Update EXIF metadata

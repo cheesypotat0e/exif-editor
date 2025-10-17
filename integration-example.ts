@@ -28,13 +28,9 @@ export function createCustomDateTimeField(
   const pickerContainer = document.createElement('div');
   wrapper.appendChild(pickerContainer);
   
-  // Determine format based on field type and context
-  const format = field.name.includes('GPS') ? 'exif' : 'iso';
-  
-  // Create the custom picker
+  // Create the custom picker (always uses EXIF format)
   const picker = new CustomDateTimePicker({
     container: pickerContainer,
-    format: format,
     showSeconds: true,
     initialValue: field.value,
     onChange: (value) => {
@@ -76,12 +72,16 @@ export function createCustomDateTimeField(
   wrapper.appendChild(hiddenInput);
   
   // Update hidden input when picker value changes
-  picker.onChange = (value) => {
+  // Store the original onChange callback
+  const originalOnChange = picker.options.onChange;
+  
+  // Override the onChange callback to update hidden input and call original
+  picker.options.onChange = (value) => {
     hiddenInput.value = picker.getValueAsString() || '';
     
     // Call the original onChange if it exists
-    if (picker.options.onChange) {
-      picker.options.onChange(value);
+    if (originalOnChange) {
+      originalOnChange(value);
     }
   };
   

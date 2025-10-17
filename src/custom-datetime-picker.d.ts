@@ -18,7 +18,6 @@ export interface DateTimePickerOptions {
     initialValue?: string;
     onChange?: (value: DateTimeValue | null) => void;
     onValidationError?: (errors: string[]) => void;
-    format?: 'iso' | 'exif';
     showSeconds?: boolean;
     minYear?: number;
     maxYear?: number;

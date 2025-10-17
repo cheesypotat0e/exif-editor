@@ -11,7 +11,6 @@ export class CustomDateTimePicker {
             showSeconds: true,
             minYear: 1900,
             maxYear: 2100,
-            format: 'iso',
             ...options
         };
         this.container = options.container;
@@ -216,18 +215,12 @@ export class CustomDateTimePicker {
         const value = this.getCurrentValue();
         if (!value)
             return null;
-        if (this.options.format === 'exif') {
-            // EXIF format: YYYY:MM:DD HH:MM:SS
-            return `${value.year}:${value.month.toString().padStart(2, '0')}:${value.day.toString().padStart(2, '0')} ${value.hour.toString().padStart(2, '0')}:${value.minute.toString().padStart(2, '0')}:${value.second.toString().padStart(2, '0')}`;
-        }
-        else {
-            // ISO format: YYYY-MM-DDTHH:MM:SS
-            return `${value.year}-${value.month.toString().padStart(2, '0')}-${value.day.toString().padStart(2, '0')}T${value.hour.toString().padStart(2, '0')}:${value.minute.toString().padStart(2, '0')}:${value.second.toString().padStart(2, '0')}`;
-        }
+        // Always return EXIF format: YYYY:MM:DD HH:MM:SS
+        return `${value.year}:${value.month.toString().padStart(2, '0')}:${value.day.toString().padStart(2, '0')} ${value.hour.toString().padStart(2, '0')}:${value.minute.toString().padStart(2, '0')}:${value.second.toString().padStart(2, '0')}`;
     }
     setValueFromString(dateTimeString) {
         let parsed = null;
-        // Try to parse EXIF format first: YYYY:MM:DD HH:MM:SS
+        // Try to parse EXIF format: YYYY:MM:DD HH:MM:SS
         const exifMatch = dateTimeString.match(/^(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/);
         if (exifMatch) {
             parsed = {
@@ -240,7 +233,7 @@ export class CustomDateTimePicker {
             };
         }
         else {
-            // Try to parse ISO format: YYYY-MM-DDTHH:MM:SS or similar
+            // Try to parse ISO format as fallback: YYYY-MM-DDTHH:MM:SS or similar
             const isoMatch = dateTimeString.match(/^(\d{4})-(\d{2})-(\d{2})T?(\d{2}):(\d{2}):(\d{2})$/);
             if (isoMatch) {
                 parsed = {

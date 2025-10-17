@@ -34,12 +34,12 @@
     <h1>Custom DateTime Picker Test</h1>
     
     <div class="test-container">
-        <h3>Test 1: Basic Picker</h3>
+        <h3>Test 1: Basic EXIF Picker</h3>
         <div id="test1"></div>
     </div>
     
     <div class="test-container">
-        <h3>Test 2: EXIF Format Picker</h3>
+        <h3>Test 2: No Seconds Picker</h3>
         <div id="test2"></div>
     </div>
     
@@ -62,16 +62,15 @@
 
         console.log('Starting DateTime Picker Tests...\n');
 
-        // Test 1: Basic ISO picker
-        console.log('=== Test 1: Basic ISO Picker ===');
+        // Test 1: Basic EXIF picker
+        console.log('=== Test 1: Basic EXIF Picker ===');
         const picker1 = new CustomDateTimePicker({
             container: document.getElementById('test1'),
-            format: 'iso',
             showSeconds: true,
             onChange: (value) => {
                 if (value) {
                     console.log('Picker 1 - Value:', JSON.stringify(value));
-                    console.log('Picker 1 - ISO String:', picker1.getValueAsString());
+                    console.log('Picker 1 - EXIF String:', picker1.getValueAsString());
                 } else {
                     console.log('Picker 1 - Invalid value');
                 }
@@ -100,7 +99,6 @@
         console.log('\n=== Test 2: EXIF Format Picker ===');
         const picker2 = new CustomDateTimePicker({
             container: document.getElementById('test2'),
-            format: 'exif',
             showSeconds: false,
             onChange: (value) => {
                 if (value) {
@@ -119,11 +117,11 @@
         // Test string parsing
         console.log('\n=== Test 3: String Parsing ===');
         
-        console.log('Testing ISO format parsing...');
-        picker1.setValueFromString('2024-12-25T09:30:15');
-        
         console.log('Testing EXIF format parsing...');
         picker1.setValueFromString('2023:06:10 18:45:30');
+        
+        console.log('Testing ISO format parsing (fallback)...');
+        picker1.setValueFromString('2024-12-25T09:30:15');
         
         console.log('Testing standard Date string parsing...');
         picker1.setValueFromString('2024-01-01 12:00:00');
