@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DateTime Picker Test</title>
+    <link rel="stylesheet" href="src/custom-datetime-picker.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .test-container {
+            background: white;
+            padding: 20px;
+            margin: 10px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .console-output {
+            background: #1e1e1e;
+            color: #00ff00;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Custom DateTime Picker Test</h1>
+    
+    <div class="test-container">
+        <h3>Test 1: Basic EXIF Picker</h3>
+        <div id="test1"></div>
+    </div>
+    
+    <div class="test-container">
+        <h3>Test 2: No Seconds Picker</h3>
+        <div id="test2"></div>
+    </div>
+    
+    <div class="test-container">
+        <h3>Console Output</h3>
+        <div id="console" class="console-output"></div>
+    </div>
+
+    <script type="module">
+        import { CustomDateTimePicker } from './src/custom-datetime-picker.js';
+
+        // Capture console output
+        const consoleDiv = document.getElementById('console');
+        const originalLog = console.log;
+        console.log = function(...args) {
+            consoleDiv.textContent += args.join(' ') + '\n';
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+            originalLog.apply(console, args);
+        };
+
+        console.log('Starting DateTime Picker Tests...\n');
+
+        // Test 1: Basic EXIF picker
+        console.log('=== Test 1: Basic EXIF Picker ===');
+        const picker1 = new CustomDateTimePicker({
+            container: document.getElementById('test1'),
+            showSeconds: true,
+            onChange: (value) => {
+                if (value) {
+                    console.log('Picker 1 - Value:', JSON.stringify(value));
+                    console.log('Picker 1 - EXIF String:', picker1.getValueAsString());
+                } else {
+                    console.log('Picker 1 - Invalid value');
+                }
+            },
+            onValidationError: (errors) => {
+                if (errors.length > 0) {
+                    console.log('Picker 1 - Validation errors:', errors.join(', '));
+                }
+            }
+        });
+
+        // Set current date/time
+        const now = new Date();
+        picker1.setValue({
+            year: now.getFullYear(),
+            month: now.getMonth() + 1,
+            day: now.getDate(),
+            hour: now.getHours(),
+            minute: now.getMinutes(),
+            second: now.getSeconds()
+        });
+
+        console.log('Set current date/time');
+
+        // Test 2: EXIF format picker
+        console.log('\n=== Test 2: EXIF Format Picker ===');
+        const picker2 = new CustomDateTimePicker({
+            container: document.getElementById('test2'),
+            showSeconds: false,
+            onChange: (value) => {
+                if (value) {
+                    console.log('Picker 2 - Value:', JSON.stringify(value));
+                    console.log('Picker 2 - EXIF String:', picker2.getValueAsString());
+                } else {
+                    console.log('Picker 2 - Invalid value');
+                }
+            }
+        });
+
+        // Set example EXIF date
+        picker2.setValueFromString('2024:03:15 14:30:45');
+        console.log('Set EXIF format date');
+
+        // Test string parsing
+        console.log('\n=== Test 3: String Parsing ===');
+        
+        console.log('Testing EXIF format parsing...');
+        picker1.setValueFromString('2023:06:10 18:45:30');
+        
+        console.log('Testing ISO format parsing (fallback)...');
+        picker1.setValueFromString('2024-12-25T09:30:15');
+        
+        console.log('Testing standard Date string parsing...');
+        picker1.setValueFromString('2024-01-01 12:00:00');
+
+        // Test validation
+        console.log('\n=== Test 4: Validation ===');
+        console.log('Testing invalid values...');
+        
+        // This should trigger validation errors
+        picker1.setValue({
+            year: 2024,
+            month: 13, // Invalid
+            day: 32,   // Invalid
+            hour: 25,  // Invalid
+            minute: 70, // Invalid
+            second: 70  // Invalid
+        });
+
+        console.log('Is picker1 valid after invalid input:', picker1.isValid());
+
+        console.log('\n=== All Tests Completed ===');
+        console.log('Check the pickers above and interact with them to test functionality.');
+    </script>
+</body>
+</html>
