@@ -1,5 +1,6 @@
 import { isExifJpeg } from "./exif";
 import { FileReader } from "./FileReader";
+import { CustomDateTimePicker } from "./custom-datetime-picker";
 
 type IDF = {
   type: number;
@@ -43,6 +44,7 @@ const TAGS = {
 let originalBuffer: ArrayBuffer | null = null; // ArrayBuffer
 let workingBuffer: ArrayBuffer | null = null; // modifiable copy
 let parsedFields: EXIFField[] = [];
+let customPickers: Map<number, CustomDateTimePicker> = new Map();
 
 const uploader = document.getElementById("uploader") as HTMLDivElement;
 const fileInput = document.getElementById("fileInput") as HTMLInputElement;
@@ -76,6 +78,80 @@ function isIOSWebKit(): boolean {
 }
 
 const NEEDS_DATETIME_FALLBACK = !HAS_DATETIME_LOCAL_SUPPORT || isIOSWebKit();
+
+// Use custom picker for better consistency and EXIF format support
+function shouldUseCustomPicker(fieldType: string): boolean {
+  return fieldType === "datetime" || fieldType === "date" || fieldType === "time";
+}
+
+function createCustomDateTimeField(
+  field: EXIFField,
+  idx: number,
+  container: HTMLElement
+): CustomDateTimePicker {
+  
+  // Create wrapper for the field
+  const wrapper = document.createElement('div');
+  wrapper.className = 'datetime-field-wrapper';
+  
+  // Add label
+  const label = document.createElement('label');
+  label.textContent = field.label;
+  label.className = 'datetime-field-label';
+  wrapper.appendChild(label);
+  
+  // Create picker container
+  const pickerContainer = document.createElement('div');
+  wrapper.appendChild(pickerContainer);
+  
+  // Determine initial value based on field type
+  let initialValue = '';
+  if (field.type === 'datetime' && typeof field.value === 'string') {
+    initialValue = field.value;
+  } else if (field.type === 'date' && typeof field.value === 'string') {
+    // Convert date to datetime format for picker
+    initialValue = field.value + ' 00:00:00';
+  } else if (field.type === 'time' && Array.isArray(field.value)) {
+    // Convert time array to datetime format (use current date)
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}:${(now.getMonth() + 1).toString().padStart(2, '0')}:${now.getDate().toString().padStart(2, '0')}`;
+    const timeStr = field.value.map(v => v.toString().padStart(2, '0')).join(':');
+    initialValue = `${dateStr} ${timeStr}`;
+  }
+  
+  // Add hidden input to maintain compatibility with existing form processing
+  const hiddenInput = document.createElement('input');
+  hiddenInput.type = 'hidden';
+  hiddenInput.dataset.idx = idx.toString();
+  wrapper.appendChild(hiddenInput);
+
+  // Create the custom picker with onChange that updates hidden input
+  const picker = new CustomDateTimePicker({
+    container: pickerContainer,
+    showSeconds: field.type !== 'date', // Hide seconds for date-only fields
+    initialValue: initialValue,
+    onChange: (value) => {
+      // Update hidden input when picker value changes
+      hiddenInput.value = picker.getValueAsString() || '';
+      
+      // Handle value changes
+      console.log(`Field ${field.name} changed:`, value);
+    },
+    onValidationError: (errors) => {
+      // Handle validation errors
+      if (errors.length > 0) {
+        console.log(`Validation errors for ${field.name}:`, errors);
+      }
+    }
+  });
+  
+  // Set initial hidden input value
+  hiddenInput.value = picker.getValueAsString() || '';
+  
+  container.appendChild(wrapper);
+  
+  return picker;
+}
 
 // drag/drop
 uploader.addEventListener("click", () => fileInput.click());
@@ -180,6 +256,9 @@ async function handleFileList(list: FileList | null) {
 
 function clearState() {
   parsedFields = [];
+  // Clean up custom pickers
+  customPickers.forEach(picker => picker.destroy());
+  customPickers.clear();
   fieldsForm.innerHTML = "";
   main.style.display = "none";
   preview.src = "";
@@ -250,6 +329,14 @@ function renderFields(fields: EXIFField[]) {
     let input;
 
     if (f.type === "date") {
+      // Use custom picker for date fields for consistency
+      if (shouldUseCustomPicker(f.type)) {
+        const picker = createCustomDateTimeField(f, idx, row);
+        customPickers.set(idx, picker);
+        fieldsForm.appendChild(row);
+        return;
+      }
+
       input = document.createElement("input");
       input.type = "date";
       const inputDateValue = toInputDate(f.value as string);
@@ -274,6 +361,14 @@ function renderFields(fields: EXIFField[]) {
 
       input.value = localDateValue;
     } else if (f.type === "time") {
+      // Use custom picker for time fields for consistency
+      if (shouldUseCustomPicker(f.type)) {
+        const picker = createCustomDateTimeField(f, idx, row);
+        customPickers.set(idx, picker);
+        fieldsForm.appendChild(row);
+        return;
+      }
+
       // Convert EXIF time (UTC) to local time before setting input value
       const utcTime = toInputTime(f.value as number[]);
       let localTime = "";
@@ -392,7 +487,15 @@ function renderFields(fields: EXIFField[]) {
       input.placeholder = "HH:MM:SS";
       input.value = localTime;
     } else {
-      // datetime
+      // datetime - use custom picker for better consistency
+      if (shouldUseCustomPicker(f.type)) {
+        const picker = createCustomDateTimeField(f, idx, row);
+        customPickers.set(idx, picker);
+        fieldsForm.appendChild(row);
+        return;
+      }
+
+      // Fallback to native datetime-local if custom picker not needed
       if (!NEEDS_DATETIME_FALLBACK) {
         input = document.createElement("input");
         input.type = "datetime-local";
@@ -569,14 +672,145 @@ function fromInputTime(val: string): number[] {
   return parts;
 }
 
+function processFieldValue(field: EXIFField, newVal: string | number[], dv: DataView) {
+  if ((typeof newVal === 'string' && newVal.length === 0) || (Array.isArray(newVal) && newVal.length === 0)) {
+    return; // skip
+  }
+
+  let target = newVal;
+
+  // For GPS date fields, convert local date to UTC
+  if (
+    field.ifd === "GPS" &&
+    field.name === "GPSDateStamp" &&
+    typeof target === "string"
+  ) {
+    const [y, m, d] = target.split(":");
+    const localDate = new Date(
+      parseInt(y),
+      parseInt(m) - 1, // Month is 0-indexed
+      parseInt(d)
+    );
+    const utcYear = localDate.getUTCFullYear();
+    const utcMonth = (localDate.getUTCMonth() + 1)
+      .toString()
+      .padStart(2, "0");
+    const utcDay = localDate.getUTCDate().toString().padStart(2, "0");
+    target = `${utcYear}:${utcMonth}:${utcDay}`;
+  }
+
+  // For GPS time fields, convert local time to UTC
+  if (
+    field.ifd === "GPS" &&
+    field.name === "GPSTimeStamp" &&
+    Array.isArray(target)
+  ) {
+    const gpsDateField = parsedFields.find(
+      (f) => f.name === "GPSDateStamp" && f.ifd === "GPS"
+    );
+    if (gpsDateField && typeof gpsDateField.value === "string") {
+      const dateMatch = gpsDateField.value.match(/(\d{4}):(\d{2}):(\d{2})/);
+      if (dateMatch) {
+        const [_, year, month, day] = dateMatch;
+        const [localHours, localMinutes, localSeconds] = target;
+
+        const localDate = new Date(
+          parseInt(year),
+          parseInt(month) - 1,
+          parseInt(day),
+          localHours,
+          localMinutes,
+          localSeconds
+        );
+
+        target = [
+          localDate.getUTCHours(),
+          localDate.getUTCMinutes(),
+          localDate.getUTCSeconds(),
+        ];
+      }
+    }
+  }
+
+  const count = field.count;
+
+  let bytes =
+    field.type === "time"
+      ? new Uint32Array(count * 2)
+      : new Uint8Array(count);
+
+  const encoder = new TextEncoder();
+
+  // For GPSDateStamp, standard is 'YYYY:MM:DD' without time. For others include full time.
+  // Write as ASCII. If string too long, truncate.
+
+  if (typeof target === "string") {
+    let s = target;
+
+    const encoded = encoder.encode(s);
+
+    const maxStore = count; // includes null if present
+
+    let len = Math.min(encoded.length, maxStore - 1);
+
+    bytes.set(encoded.subarray(0, len), 0);
+    // null terminate
+
+    bytes[len] = 0;
+
+    // rest already zero
+    // write into workingBuffer at absolute offset
+    const abs = field.valueOffset;
+
+    for (let i = 0; i < count; i++) {
+      dv.setUint8(abs + i, bytes[i]);
+    }
+  } else if (Array.isArray(target)) {
+    for (let i = 0; i < count; i++) {
+      const abs = field.valueOffset + 8 * i;
+
+      dv.setUint32(abs, target[i]);
+      dv.setUint32(abs + 4, 1);
+    }
+  }
+}
+
 function downloadModified(filename: string) {
   if (!workingBuffer) {
     return;
   }
 
   const inputs = fieldsForm.querySelectorAll("input");
-
   const dv = new DataView(workingBuffer);
+
+  // Process custom pickers first
+  customPickers.forEach((picker, idx) => {
+    const field = parsedFields[idx];
+    const stringValue = picker.getValueAsString();
+    
+    if (!stringValue) {
+      return; // skip if no valid value
+    }
+
+    let newVal: string | number[];
+
+    if (field.type === 'datetime') {
+      newVal = fromInputDateTime(stringValue);
+    } else if (field.type === 'date') {
+      // Extract date part from EXIF format string
+      const datePart = stringValue.split(' ')[0].replace(/:/g, '-');
+      newVal = fromInputDate(datePart);
+    } else if (field.type === 'time') {
+      // Extract time part from EXIF format string  
+      const timePart = stringValue.split(' ')[1] || '00:00:00';
+      newVal = fromInputTime(timePart);
+    } else {
+      return;
+    }
+
+    // Apply the same processing logic as the original inputs
+    processFieldValue(field, newVal, dv);
+  });
 
   inputs.forEach((inp: HTMLInputElement) => {
     // Ignore split controls for datetime fallback; the hidden combined input will be processed
@@ -585,121 +819,24 @@ function downloadModified(filename: string) {
     }
     const idx = Number(inp.dataset.idx);
 
+    // Skip if this field is handled by a custom picker
+    if (customPickers.has(idx)) {
+      return;
+    }
+
     const field = parsedFields[idx];
 
     let newVal: string | number[];
 
     if (field.type === "date") {
-      // Use the original fromInputDate function
       newVal = fromInputDate(inp.value);
-
-      // For GPS date fields, convert local date to UTC
-      if (
-        field.ifd === "GPS" &&
-        field.name === "GPSDateStamp" &&
-        typeof newVal === "string"
-      ) {
-        const [y, m, d] = newVal.split(":");
-        const localDate = new Date(
-          parseInt(y),
-          parseInt(m) - 1, // Month is 0-indexed
-          parseInt(d)
-        );
-        const utcYear = localDate.getUTCFullYear();
-        const utcMonth = (localDate.getUTCMonth() + 1)
-          .toString()
-          .padStart(2, "0");
-        const utcDay = localDate.getUTCDate().toString().padStart(2, "0");
-        newVal = `${utcYear}:${utcMonth}:${utcDay}`;
-      }
     } else if (field.type === "time") {
-      // Use the original fromInputTime function
       newVal = fromInputTime(inp.value);
-
-      // For GPS time fields, convert local time to UTC
-      if (
-        field.ifd === "GPS" &&
-        field.name === "GPSTimeStamp" &&
-        Array.isArray(newVal)
-      ) {
-        const gpsDateField = parsedFields.find(
-          (f) => f.name === "GPSDateStamp" && f.ifd === "GPS"
-        );
-        if (gpsDateField && typeof gpsDateField.value === "string") {
-          const dateMatch = gpsDateField.value.match(/(\d{4}):(\d{2}):(\d{2})/);
-          if (dateMatch) {
-            const [_, year, month, day] = dateMatch;
-            const [localHours, localMinutes, localSeconds] = newVal;
-
-            const localDate = new Date(
-              parseInt(year),
-              parseInt(month) - 1,
-              parseInt(day),
-              localHours,
-              localMinutes,
-              localSeconds
-            );
-
-            newVal = [
-              localDate.getUTCHours(),
-              localDate.getUTCMinutes(),
-              localDate.getUTCSeconds(),
-            ];
-          }
-        }
-      }
     } else {
-      // Use the original fromInputDateTime function
       newVal = fromInputDateTime(inp.value);
     }
 
-    if (newVal.length === 0) {
-      return; // skip
-    }
-
-    let target = newVal;
-
-    const count = field.count;
-
-    let bytes =
-      field.type === "time"
-        ? new Uint32Array(count * 2)
-        : new Uint8Array(count);
-
-    const encoder = new TextEncoder();
-
-    // For GPSDateStamp, standard is 'YYYY:MM:DD' without time. For others include full time.
-    // Write as ASCII. If string too long, truncate.
-
-    if (typeof target === "string") {
-      let s = target;
-
-      const encoded = encoder.encode(s);
-
-      const maxStore = count; // includes null if present
-
-      let len = Math.min(encoded.length, maxStore - 1);
-
-      bytes.set(encoded.subarray(0, len), 0);
-      // null terminate
-
-      bytes[len] = 0;
-
-      // rest already zero
-      // write into workingBuffer at absolute offset
-      const abs = field.valueOffset;
-
-      for (let i = 0; i < count; i++) {
-        dv.setUint8(abs + i, bytes[i]);
-      }
-    } else if (Array.isArray(target)) {
-      for (let i = 0; i < count; i++) {
-        const abs = field.valueOffset + 8 * i;
-
-        dv.setUint32(abs, target[i]);
-        dv.setUint32(abs + 4, 1);
-      }
-    }
+    processFieldValue(field, newVal, dv);
   });
 
   // create blob and trigger download
