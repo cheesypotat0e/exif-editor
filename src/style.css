@@ -54,6 +54,7 @@ form#fields {
   flex-direction: column;
   gap: 12px;
   flex: 1;
+  max-width: 800px; /* Limit form width on very wide screens */
 }
 .row {
   display: flex;
@@ -136,6 +137,7 @@ pre {
 .row .datetime-field-wrapper {
   flex: 1;
   min-width: 280px; /* Minimum width for datetime picker */
+  max-width: 600px; /* Prevent excessive stretching on wide screens */
 }
 
 .row .datetime-field-wrapper .datetime-field-label {

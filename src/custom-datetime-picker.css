@@ -10,6 +10,7 @@
   background: #ffffff;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   width: 100%;
+  max-width: 800px; /* Limit max width to prevent excessive stretching on wide screens */
   box-sizing: border-box;
 }
 
@@ -20,6 +21,7 @@
   flex-wrap: wrap;
   justify-content: flex-start;
   width: 100%;
+  max-width: 600px; /* Limit width on wide screens to prevent excessive spacing */
 }
 
 .date-group {
@@ -86,9 +88,11 @@
   font-weight: 500;
   color: #6b7280;
   margin: 0 2px;
-  align-self: center;
-  /* Remove padding-bottom to fix alignment */
-  margin-top: 20px; /* Compensate for label height */
+  /* Perfect vertical centering with input fields */
+  display: flex;
+  align-items: center;
+  height: 42px; /* Match input height (padding: 10px + font-size: 14px + borders) */
+  margin-top: 26px; /* Align with input container accounting for label height */
 }
 
 .datetime-errors {
@@ -111,6 +115,19 @@
 
 .datetime-errors .error:last-child {
   margin-bottom: 0;
+}
+
+/* Large screen adjustments */
+@media (min-width: 1024px) {
+  .datetime-group {
+    max-width: 500px; /* Constrain width on desktop to prevent excessive spacing */
+  }
+}
+
+@media (min-width: 1440px) {
+  .datetime-group {
+    max-width: 550px; /* Slightly more space on very large screens */
+  }
 }
 
 /* Responsive adjustments */
@@ -136,8 +153,9 @@
   
   .datetime-separator {
     margin: 0 2px; /* Small margins on mobile */
-    margin-top: 18px; /* Adjust for mobile */
+    margin-top: 24px; /* Adjust for mobile label height */
     font-size: 16px; /* Slightly smaller separator */
+    height: 44px; /* Match mobile input height */
   }
   
   .datetime-year {
@@ -185,6 +203,8 @@
   .datetime-separator {
     margin: 0 1px;
     font-size: 14px;
+    height: 40px; /* Adjust for smaller screens */
+    margin-top: 22px;
   }
   
   .input-container {
