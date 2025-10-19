@@ -52,9 +52,9 @@ img.preview {
 form#fields {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px; /* Reduced from 12px for tighter field spacing */
   flex: 1;
-  max-width: 800px; /* Limit form width on very wide screens */
+  max-width: 600px; /* Reduced from 800px for more compact display on side screens */
 }
 .row {
   display: flex;
@@ -122,7 +122,7 @@ pre {
 .datetime-field-wrapper {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px; /* Reduced from 8px for tighter spacing */
   width: 100%;
   min-width: 0; /* Allow shrinking on mobile */
 }
@@ -137,7 +137,7 @@ pre {
 .row .datetime-field-wrapper {
   flex: 1;
   min-width: 280px; /* Minimum width for datetime picker */
-  max-width: 600px; /* Prevent excessive stretching on wide screens */
+  max-width: 480px; /* Reduced from 600px for more compact layout on side screens */
 }
 
 .row .datetime-field-wrapper .datetime-field-label {
@@ -248,4 +248,48 @@ pre {
   background: transparent;
   box-shadow: none;
   width: 100%;
+  gap: 8px; /* Override the default gap for inline display */
+  max-width: 100%; /* Allow full width within row constraints */
+}
+
+/* Remove extra wrapper spacing when inside form rows */
+.row .datetime-field-wrapper .custom-datetime-picker {
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+/* Side screen / wide display optimizations */
+@media (min-width: 1024px) {
+  form#fields {
+    gap: 6px; /* Even tighter spacing on wide screens */
+  }
+  
+  .meta {
+    gap: 14px; /* Reduced from 18px for more compact layout */
+  }
+  
+  .row {
+    gap: 8px; /* Reduced from 12px for tighter horizontal spacing */
+  }
+  
+  .datetime-field-wrapper {
+    gap: 2px; /* Minimal gap between label and input on wide screens */
+  }
+}
+
+@media (min-width: 1440px) {
+  /* Extra optimizations for very wide/side screens */
+  .card {
+    padding: 14px; /* Reduced padding for more content space */
+  }
+  
+  form#fields {
+    gap: 4px; /* Minimal vertical spacing between fields */
+    max-width: 500px; /* Further constrain form width */
+  }
+  
+  .row .datetime-field-wrapper {
+    max-width: 400px; /* More compact on very wide screens */
+  }
 }
