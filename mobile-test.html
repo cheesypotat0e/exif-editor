@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>Mobile Layout Test - DateTime Picker</title>
+    <link rel="stylesheet" href="src/style.css">
+    <link rel="stylesheet" href="src/custom-datetime-picker.css">
+    <style>
+        /* Mobile testing styles */
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: #f3f4f6;
+        }
+        
+        .test-header {
+            background: #1f2937;
+            color: white;
+            padding: 16px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .test-header h1 {
+            margin: 0;
+            font-size: 18px;
+        }
+        
+        .viewport-info {
+            font-size: 12px;
+            color: #9ca3af;
+            margin-top: 4px;
+        }
+        
+        .test-container {
+            padding: 16px;
+        }
+        
+        .test-section {
+            background: white;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .test-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        
+        .test-description {
+            font-size: 14px;
+            color: #6b7280;
+            margin-bottom: 16px;
+            line-height: 1.5;
+        }
+        
+        /* Touch target indicator */
+        .touch-indicator {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #2563eb;
+            color: white;
+            padding: 8px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        .touch-indicator.active {
+            opacity: 1;
+        }
+        
+        /* Device simulation frames */
+        .device-frame {
+            border: 2px solid #374151;
+            border-radius: 20px;
+            padding: 8px;
+            margin-bottom: 16px;
+            background: #000;
+        }
+        
+        .device-screen {
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            min-height: 200px;
+            padding: 12px;
+        }
+        
+        .device-label {
+            font-size: 11px;
+            color: #9ca3af;
+            text-align: center;
+            margin-top: 8px;
+        }
+        
+        /* Orientation test */
+        .orientation-test {
+            padding: 16px;
+            background: #fef3c7;
+            border: 1px solid #fbbf24;
+            border-radius: 8px;
+            margin-bottom: 16px;
+        }
+        
+        .orientation-test .status {
+            font-weight: 600;
+            color: #92400e;
+        }
+        
+        /* Touch test area */
+        .touch-test {
+            background: #f0f9ff;
+            border: 2px dashed #3b82f6;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            margin: 16px 0;
+            min-height: 100px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        
+        .touch-test.touched {
+            background: #dbeafe;
+            border-color: #2563eb;
+        }
+        
+        /* Input focus test */
+        .focus-test-input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 16px; /* Prevent zoom on iOS */
+            margin: 8px 0;
+            box-sizing: border-box;
+        }
+        
+        .focus-test-input:focus {
+            outline: none;
+            border-color: #2563eb;
+        }
+        
+        /* Scroll test */
+        .scroll-container {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 12px;
+            background: #f9fafb;
+        }
+        
+        .scroll-content {
+            height: 600px;
+            background: linear-gradient(to bottom, #fff, #f3f4f6);
+            border-radius: 8px;
+            padding: 16px;
+        }
+        
+        /* Performance metrics */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-top: 12px;
+        }
+        
+        .metric-card {
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            padding: 8px;
+        }
+        
+        .metric-label {
+            font-size: 11px;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .metric-value {
+            font-size: 18px;
+            font-weight: 600;
+            color: #1f2937;
+            margin-top: 4px;
+        }
+        
+        /* Responsive test indicators */
+        @media (max-width: 640px) {
+            .responsive-indicator::after {
+                content: "Mobile";
+                background: #10b981;
+            }
+        }
+        
+        @media (min-width: 641px) and (max-width: 768px) {
+            .responsive-indicator::after {
+                content: "Tablet";
+                background: #3b82f6;
+            }
+        }
+        
+        @media (min-width: 769px) {
+            .responsive-indicator::after {
+                content: "Desktop";
+                background: #8b5cf6;
+            }
+        }
+        
+        .responsive-indicator::after {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            color: white;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-header">
+        <h1>Mobile Layout Test <span class="responsive-indicator"></span></h1>
+        <div class="viewport-info" id="viewportInfo">
+            Loading viewport info...
+        </div>
+    </div>
+    
+    <div class="touch-indicator" id="touchIndicator">Touch detected</div>
+    
+    <div class="test-container">
+        <!-- Orientation Test -->
+        <div class="orientation-test">
+            <div class="status">Orientation: <span id="orientationStatus">detecting...</span></div>
+            <div style="font-size: 12px; margin-top: 4px;">
+                Screen: <span id="screenDimensions">...</span>
+            </div>
+        </div>
+        
+        <!-- Main App Integration Test -->
+        <div class="test-section">
+            <h2 class="test-title">Main App Integration</h2>
+            <p class="test-description">
+                Testing the DateTime picker as it appears in the main EXIF editor app
+            </p>
+            
+            <div class="card" style="margin: 0; width: 100%; max-width: 100%;">
+                <div class="meta" style="margin-top: 0;">
+                    <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+                        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='150' viewBox='0 0 200 150'%3E%3Crect width='200' height='150' fill='%23e5e7eb'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%236b7280' font-family='system-ui' font-size='14'%3EImage Preview%3C/text%3E%3C/svg%3E" class="preview" alt="preview">
+                        <div class="muted">test-image.jpg</div>
+                    </div>
+                    <form id="fields" style="flex: 1;">
+                        <div class="row">
+                            <label>DateTime</label>
+                            <div id="appPicker1"></div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Touch Target Test -->
+        <div class="test-section">
+            <h2 class="test-title">Touch Target Test</h2>
+            <p class="test-description">
+                Verify input fields meet minimum 44x44px touch target guidelines
+            </p>
+            <div id="touchPicker"></div>
+            
+            <div class="touch-test" id="touchTest">
+                Tap here to test touch response
+            </div>
+            
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">Min Touch Size</div>
+                    <div class="metric-value">44×44px</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Input Height</div>
+                    <div class="metric-value" id="inputHeight">--px</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Keyboard Focus Test -->
+        <div class="test-section">
+            <h2 class="test-title">Keyboard & Focus Test</h2>
+            <p class="test-description">
+                Test virtual keyboard behavior and focus states
+            </p>
+            
+            <input type="text" class="focus-test-input" placeholder="Tap to test keyboard (should not zoom)">
+            
+            <div id="keyboardPicker"></div>
+            
+            <div style="margin-top: 12px; padding: 12px; background: #f0f9ff; border-radius: 6px;">
+                <p style="margin: 0; font-size: 13px; color: #1e40af;">
+                    ✓ Font size is 16px or larger to prevent zoom on iOS<br>
+                    ✓ Proper input types for numeric keyboards<br>
+                    ✓ Touch-friendly spacing between inputs
+                </p>
+            </div>
+        </div>
+        
+        <!-- Scroll Performance Test -->
+        <div class="test-section">
+            <h2 class="test-title">Scroll Performance</h2>
+            <p class="test-description">
+                Test picker behavior within scrollable containers
+            </p>
+            
+            <div class="scroll-container">
+                <div class="scroll-content">
+                    <p>Scroll down to see picker...</p>
+                    <div style="margin-top: 200px;">
+                        <div id="scrollPicker"></div>
+                    </div>
+                    <p style="margin-top: 100px;">Continue scrolling...</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Device Width Tests -->
+        <div class="test-section">
+            <h2 class="test-title">Device Width Simulations</h2>
+            
+            <!-- iPhone SE (375px) -->
+            <div class="device-frame" style="max-width: 375px; margin: 0 auto;">
+                <div class="device-screen">
+                    <div id="iphoneSEPicker"></div>
+                </div>
+                <div class="device-label">iPhone SE/8 (375px)</div>
+            </div>
+            
+            <!-- iPhone 12 Pro (390px) -->
+            <div class="device-frame" style="max-width: 390px; margin: 0 auto;">
+                <div class="device-screen">
+                    <div id="iphone12Picker"></div>
+                </div>
+                <div class="device-label">iPhone 12/13/14 (390px)</div>
+            </div>
+            
+            <!-- Android (360px) -->
+            <div class="device-frame" style="max-width: 360px; margin: 0 auto;">
+                <div class="device-screen">
+                    <div id="androidPicker"></div>
+                </div>
+                <div class="device-label">Android (360px)</div>
+            </div>
+        </div>
+        
+        <!-- Multiple Pickers Test -->
+        <div class="test-section">
+            <h2 class="test-title">Multiple Fields</h2>
+            <p class="test-description">
+                Test multiple datetime pickers as they would appear in the app
+            </p>
+            
+            <form style="display: flex; flex-direction: column; gap: 12px;">
+                <div class="row">
+                    <label>DateTimeOriginal</label>
+                    <div id="multiPicker1"></div>
+                </div>
+                <div class="row">
+                    <label>DateTimeDigitized</label>
+                    <div id="multiPicker2"></div>
+                </div>
+                <div class="row">
+                    <label>GPS DateTime</label>
+                    <div id="multiPicker3"></div>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <script type="module">
+        import { CustomDateTimePicker } from './src/custom-datetime-picker.js';
+        
+        // Update viewport info
+        function updateViewportInfo() {
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const dpr = window.devicePixelRatio || 1;
+            const orientation = window.matchMedia("(orientation: portrait)").matches ? "portrait" : "landscape";
+            
+            document.getElementById('viewportInfo').textContent = 
+                `${vw}×${vh}px | DPR: ${dpr.toFixed(1)} | ${orientation}`;
+            
+            document.getElementById('orientationStatus').textContent = orientation;
+            document.getElementById('screenDimensions').textContent = `${screen.width}×${screen.height}px`;
+        }
+        
+        updateViewportInfo();
+        window.addEventListener('resize', updateViewportInfo);
+        window.addEventListener('orientationchange', updateViewportInfo);
+        
+        // Touch indicator
+        let touchTimeout;
+        document.addEventListener('touchstart', () => {
+            const indicator = document.getElementById('touchIndicator');
+            indicator.classList.add('active');
+            clearTimeout(touchTimeout);
+            touchTimeout = setTimeout(() => {
+                indicator.classList.remove('active');
+            }, 1000);
+        });
+        
+        // Touch test area
+        const touchTest = document.getElementById('touchTest');
+        touchTest.addEventListener('touchstart', () => {
+            touchTest.classList.add('touched');
+            touchTest.textContent = 'Touch detected! ✓';
+        });
+        touchTest.addEventListener('touchend', () => {
+            setTimeout(() => {
+                touchTest.classList.remove('touched');
+                touchTest.textContent = 'Tap here to test touch response';
+            }, 500);
+        });
+        
+        // Initialize all test pickers
+        const testDate = '2024:03:15 14:30:45';
+        
+        // Main app integration
+        new CustomDateTimePicker({
+            container: document.getElementById('appPicker1'),
+            initialValue: testDate,
+            showSeconds: true
+        });
+        
+        // Touch target test
+        const touchPicker = new CustomDateTimePicker({
+            container: document.getElementById('touchPicker'),
+            initialValue: testDate,
+            showSeconds: true
+        });
+        
+        // Measure input height
+        setTimeout(() => {
+            const input = document.querySelector('#touchPicker .datetime-input');
+            if (input) {
+                const height = input.offsetHeight;
+                document.getElementById('inputHeight').textContent = `${height}px`;
+                if (height < 44) {
+                    document.getElementById('inputHeight').style.color = '#dc2626';
+                } else {
+                    document.getElementById('inputHeight').style.color = '#10b981';
+                }
+            }
+        }, 100);
+        
+        // Keyboard focus test
+        new CustomDateTimePicker({
+            container: document.getElementById('keyboardPicker'),
+            initialValue: testDate,
+            showSeconds: true
+        });
+        
+        // Scroll test
+        new CustomDateTimePicker({
+            container: document.getElementById('scrollPicker'),
+            initialValue: testDate,
+            showSeconds: false
+        });
+        
+        // Device simulations
+        new CustomDateTimePicker({
+            container: document.getElementById('iphoneSEPicker'),
+            initialValue: '2024:01:01 00:00:00',
+            showSeconds: false
+        });
+        
+        new CustomDateTimePicker({
+            container: document.getElementById('iphone12Picker'),
+            initialValue: '2024:06:15 12:00:00',
+            showSeconds: false
+        });
+        
+        new CustomDateTimePicker({
+            container: document.getElementById('androidPicker'),
+            initialValue: '2024:12:31 23:59:59',
+            showSeconds: false
+        });
+        
+        // Multiple pickers
+        new CustomDateTimePicker({
+            container: document.getElementById('multiPicker1'),
+            initialValue: '2024:03:15 10:30:00',
+            showSeconds: true
+        });
+        
+        new CustomDateTimePicker({
+            container: document.getElementById('multiPicker2'),
+            initialValue: '2024:03:15 10:31:00',
+            showSeconds: true
+        });
+        
+        new CustomDateTimePicker({
+            container: document.getElementById('multiPicker3'),
+            initialValue: '2024:03:15 10:32:00',
+            showSeconds: true
+        });
+        
+        // Log any errors
+        window.addEventListener('error', (e) => {
+            console.error('Error:', e.message, e);
+        });
+    </script>
+</body>
+</html>
