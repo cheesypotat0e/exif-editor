@@ -18,6 +18,7 @@ body {
   padding: 18px;
   width: 760px;
   max-width: 96%;
+  box-sizing: border-box;
 }
 .upload {
   border: 2px dashed #cbd5e1;
@@ -46,6 +47,7 @@ img.preview {
   display: flex;
   gap: 18px;
   align-items: flex-start;
+  flex-wrap: wrap;
 }
 form#fields {
   display: flex;
@@ -121,6 +123,7 @@ pre {
   flex-direction: column;
   gap: 8px;
   width: 100%;
+  min-width: 0; /* Allow shrinking on mobile */
 }
 
 .datetime-field-label {
@@ -132,10 +135,108 @@ pre {
 
 .row .datetime-field-wrapper {
   flex: 1;
+  min-width: 280px; /* Minimum width for datetime picker */
 }
 
 .row .datetime-field-wrapper .datetime-field-label {
   display: none; /* Hide duplicate label since row already has one */
+}
+
+/* Mobile-specific adjustments */
+@media (max-width: 640px) {
+  body {
+    padding: 16px;
+  }
+  
+  .card {
+    padding: 14px;
+  }
+  
+  .meta {
+    flex-direction: column;
+    gap: 16px;
+  }
+  
+  .preview {
+    max-width: 100%;
+    height: auto;
+  }
+  
+  .row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  
+  .row label {
+    min-width: unset;
+    margin-bottom: 4px;
+  }
+  
+  .row .datetime-field-wrapper {
+    min-width: unset;
+    width: 100%;
+  }
+  
+  .row .datetime-field-wrapper .datetime-field-label {
+    display: block; /* Show label on mobile when stacked */
+  }
+  
+  form#fields {
+    width: 100%;
+  }
+  
+  .actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  
+  .actions > div {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+  }
+  
+  button {
+    flex: 1;
+  }
+}
+
+/* Extra small screens */
+@media (max-width: 480px) {
+  body {
+    padding: 12px;
+  }
+  
+  .card {
+    padding: 12px;
+    border-radius: 8px;
+  }
+  
+  h2 {
+    font-size: 1.25rem;
+  }
+  
+  .upload {
+    min-height: 100px;
+    padding: 14px;
+  }
+}
+
+/* Landscape mobile */
+@media (max-width: 812px) and (orientation: landscape) {
+  body {
+    padding: 12px;
+  }
+  
+  .meta {
+    flex-direction: row;
+  }
+  
+  img.preview {
+    max-height: 120px;
+  }
 }
 
 .row .custom-datetime-picker {
@@ -144,4 +245,5 @@ pre {
   padding: 0;
   background: transparent;
   box-shadow: none;
+  width: 100%;
 }

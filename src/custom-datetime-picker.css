@@ -3,30 +3,37 @@
 .custom-datetime-picker {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+  gap: 16px; /* Increased from 12px for better section separation */
+  padding: 20px; /* Increased from 16px for more breathing room */
   border: 1px solid #d1d5db;
   border-radius: 8px;
   background: #ffffff;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .datetime-group {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-end; /* Changed from center to flex-end for better baseline alignment */
+  gap: 10px; /* Increased from 8px for better spacing */
   flex-wrap: wrap;
+  justify-content: flex-start;
+  width: 100%;
 }
 
 .date-group {
-  padding-bottom: 8px;
+  padding-bottom: 12px; /* Increased from 8px for better visual separation */
   border-bottom: 1px solid #e5e7eb;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .input-container {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px; /* Increased from 4px for better label-input spacing */
+  flex-shrink: 0;
 }
 
 .input-label {
@@ -38,13 +45,16 @@
 }
 
 .datetime-input {
-  padding: 8px 12px;
+  padding: 10px 12px; /* Increased vertical padding from 8px to 10px */
   border: 1px solid #d1d5db;
   border-radius: 6px;
   font-size: 14px;
   text-align: center;
   transition: border-color 0.2s, box-shadow 0.2s;
   background: #ffffff;
+  box-sizing: border-box;
+  -webkit-appearance: none; /* Remove iOS default styling */
+  appearance: none;
 }
 
 .datetime-input:focus {
@@ -59,6 +69,7 @@
 
 .datetime-year {
   width: 80px;
+  flex-shrink: 0;
 }
 
 .datetime-month,
@@ -67,15 +78,17 @@
 .datetime-minute,
 .datetime-second {
   width: 60px;
+  flex-shrink: 0;
 }
 
 .datetime-separator {
   font-size: 18px;
   font-weight: 500;
   color: #6b7280;
-  margin: 0 4px;
-  align-self: flex-end;
-  padding-bottom: 8px;
+  margin: 0 2px;
+  align-self: center;
+  /* Remove padding-bottom to fix alignment */
+  margin-top: 20px; /* Compensate for label height */
 }
 
 .datetime-errors {
@@ -103,16 +116,28 @@
 /* Responsive adjustments */
 @media (max-width: 640px) {
   .datetime-group {
-    justify-content: center;
+    gap: 6px; /* Tighter gap on mobile */
+    justify-content: flex-start;
   }
   
   .custom-datetime-picker {
-    padding: 12px;
+    padding: 12px; /* Less padding on mobile */
+    gap: 12px; /* Reduce gap on mobile */
   }
   
   .datetime-input {
-    padding: 6px 8px;
-    font-size: 13px;
+    padding: 10px 8px; /* Better touch target size - min 44px height */
+    font-size: 16px; /* Prevent zoom on iOS */
+  }
+  
+  .input-label {
+    font-size: 11px; /* Smaller labels on mobile */
+  }
+  
+  .datetime-separator {
+    margin: 0 2px; /* Small margins on mobile */
+    margin-top: 18px; /* Adjust for mobile */
+    font-size: 16px; /* Slightly smaller separator */
   }
   
   .datetime-year {
@@ -124,7 +149,62 @@
   .datetime-hour,
   .datetime-minute,
   .datetime-second {
-    width: 50px;
+    width: 55px;
+  }
+  
+  /* Stack date and time groups on very small screens */
+  .date-group,
+  .time-group {
+    width: 100%;
+  }
+}
+
+/* Extra small devices (phones in portrait) */
+@media (max-width: 480px) {
+  .datetime-group {
+    gap: 4px;
+  }
+  
+  .custom-datetime-picker {
+    padding: 10px;
+    gap: 10px;
+  }
+  
+  .datetime-year {
+    width: 65px;
+  }
+  
+  .datetime-month,
+  .datetime-day,
+  .datetime-hour,
+  .datetime-minute,
+  .datetime-second {
+    width: 48px;
+  }
+  
+  .datetime-separator {
+    margin: 0 1px;
+    font-size: 14px;
+  }
+  
+  .input-container {
+    gap: 4px;
+  }
+}
+
+/* Landscape orientation on mobile */
+@media (max-width: 812px) and (orientation: landscape) {
+  .custom-datetime-picker {
+    padding: 8px 12px;
+    gap: 8px;
+  }
+  
+  .datetime-input {
+    padding: 8px 6px;
+  }
+  
+  .date-group {
+    padding-bottom: 8px;
   }
 }
 
