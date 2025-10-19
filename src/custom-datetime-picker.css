@@ -3,8 +3,8 @@
 .custom-datetime-picker {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+  gap: 16px; /* Increased from 12px for better section separation */
+  padding: 20px; /* Increased from 16px for more breathing room */
   border: 1px solid #d1d5db;
   border-radius: 8px;
   background: #ffffff;
@@ -13,20 +13,20 @@
 
 .datetime-group {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-end; /* Changed from center to flex-end for better baseline alignment */
+  gap: 10px; /* Increased from 8px for better spacing */
   flex-wrap: wrap;
 }
 
 .date-group {
-  padding-bottom: 8px;
+  padding-bottom: 12px; /* Increased from 8px for better visual separation */
   border-bottom: 1px solid #e5e7eb;
 }
 
 .input-container {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px; /* Increased from 4px for better label-input spacing */
 }
 
 .input-label {
@@ -38,7 +38,7 @@
 }
 
 .datetime-input {
-  padding: 8px 12px;
+  padding: 10px 12px; /* Increased vertical padding from 8px to 10px */
   border: 1px solid #d1d5db;
   border-radius: 6px;
   font-size: 14px;
@@ -73,9 +73,10 @@
   font-size: 18px;
   font-weight: 500;
   color: #6b7280;
-  margin: 0 4px;
-  align-self: flex-end;
-  padding-bottom: 8px;
+  margin: 0 2px;
+  align-self: center;
+  /* Remove padding-bottom to fix alignment */
+  margin-top: 20px; /* Compensate for label height */
 }
 
 .datetime-errors {
@@ -104,15 +105,22 @@
 @media (max-width: 640px) {
   .datetime-group {
     justify-content: center;
+    gap: 8px; /* Reduce gap on mobile */
   }
   
   .custom-datetime-picker {
-    padding: 12px;
+    padding: 16px; /* Adjusted from 12px */
+    gap: 12px; /* Reduce gap on mobile */
   }
   
   .datetime-input {
-    padding: 6px 8px;
+    padding: 8px 10px; /* Better touch target size */
     font-size: 13px;
+  }
+  
+  .datetime-separator {
+    margin: 0 1px; /* Reduce separator margins on mobile */
+    margin-top: 18px; /* Adjust for mobile */
   }
   
   .datetime-year {

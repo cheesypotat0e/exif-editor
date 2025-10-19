@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DateTime Picker Spacing Test</title>
+    <link rel="stylesheet" href="src/custom-datetime-picker.css">
+    <style>
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f3f4f6;
+        }
+        
+        h1 {
+            color: #1f2937;
+            margin-bottom: 8px;
+        }
+        
+        .subtitle {
+            color: #6b7280;
+            margin-bottom: 32px;
+        }
+        
+        .test-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 24px;
+            margin-bottom: 40px;
+        }
+        
+        .test-case {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+        }
+        
+        .test-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #e5e7eb;
+        }
+        
+        .spacing-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+            margin-top: 20px;
+            padding: 20px;
+            background: #f9fafb;
+            border-radius: 8px;
+        }
+        
+        .spacing-annotation {
+            position: relative;
+            border: 2px dashed #2563eb;
+            border-radius: 4px;
+            padding: 8px;
+        }
+        
+        .spacing-label {
+            position: absolute;
+            top: -10px;
+            left: 10px;
+            background: #2563eb;
+            color: white;
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 500;
+        }
+        
+        .metrics {
+            margin-top: 20px;
+            padding: 16px;
+            background: #fef3c7;
+            border: 1px solid #fbbf24;
+            border-radius: 6px;
+        }
+        
+        .metrics h3 {
+            margin: 0 0 12px 0;
+            color: #92400e;
+            font-size: 14px;
+        }
+        
+        .metric-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+            font-size: 13px;
+            color: #78350f;
+        }
+        
+        .metric-value {
+            font-weight: 600;
+            font-family: monospace;
+        }
+        
+        /* Highlight spacing for visual inspection */
+        .highlight-spacing .datetime-group {
+            background: rgba(59, 130, 246, 0.05);
+            border: 1px dashed rgba(59, 130, 246, 0.3);
+        }
+        
+        .highlight-spacing .input-container {
+            background: rgba(16, 185, 129, 0.05);
+            border: 1px dashed rgba(16, 185, 129, 0.3);
+        }
+        
+        .highlight-spacing .datetime-separator {
+            background: rgba(239, 68, 68, 0.1);
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <h1>DateTime Picker Spacing Test</h1>
+    <p class="subtitle">Visual verification of component spacing improvements</p>
+
+    <div class="test-container">
+        <div class="test-case">
+            <h2 class="test-title">Standard Configuration</h2>
+            <div id="picker1"></div>
+            
+            <div class="metrics">
+                <h3>Spacing Metrics:</h3>
+                <div class="metric-item">
+                    <span>Container Padding:</span>
+                    <span class="metric-value">20px</span>
+                </div>
+                <div class="metric-item">
+                    <span>Section Gap:</span>
+                    <span class="metric-value">16px</span>
+                </div>
+                <div class="metric-item">
+                    <span>Group Gap:</span>
+                    <span class="metric-value">10px</span>
+                </div>
+                <div class="metric-item">
+                    <span>Label-Input Gap:</span>
+                    <span class="metric-value">6px</span>
+                </div>
+                <div class="metric-item">
+                    <span>Input Padding:</span>
+                    <span class="metric-value">10px 12px</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="test-case">
+            <h2 class="test-title">With Spacing Highlights</h2>
+            <div id="picker2" class="highlight-spacing"></div>
+            
+            <div class="metrics">
+                <h3>Visual Guides:</h3>
+                <div class="metric-item">
+                    <span style="display: inline-block; width: 12px; height: 12px; background: rgba(59, 130, 246, 0.2); border: 1px solid rgba(59, 130, 246, 0.5); margin-right: 8px;"></span>
+                    <span>Date/Time Groups</span>
+                </div>
+                <div class="metric-item">
+                    <span style="display: inline-block; width: 12px; height: 12px; background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.5); margin-right: 8px;"></span>
+                    <span>Input Containers</span>
+                </div>
+                <div class="metric-item">
+                    <span style="display: inline-block; width: 12px; height: 12px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.5); margin-right: 8px;"></span>
+                    <span>Separators</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="test-container">
+        <div class="test-case">
+            <h2 class="test-title">Without Seconds</h2>
+            <div id="picker3"></div>
+        </div>
+
+        <div class="test-case">
+            <h2 class="test-title">Mobile View (Simulated)</h2>
+            <div style="max-width: 320px; margin: 0 auto;">
+                <div id="picker4"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="test-case">
+        <h2 class="test-title">Alignment Test</h2>
+        <div class="spacing-grid">
+            <div class="spacing-annotation">
+                <span class="spacing-label">Multiple Pickers Side-by-Side</span>
+                <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                    <div id="picker5"></div>
+                    <div id="picker6"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { CustomDateTimePicker } from './src/custom-datetime-picker.js';
+
+        // Initialize all test pickers
+        const testDate = {
+            year: 2024,
+            month: 3,
+            day: 15,
+            hour: 14,
+            minute: 30,
+            second: 45
+        };
+
+        // Standard configuration
+        new CustomDateTimePicker({
+            container: document.getElementById('picker1'),
+            showSeconds: true,
+            initialValue: '2024:03:15 14:30:45'
+        });
+
+        // With spacing highlights
+        new CustomDateTimePicker({
+            container: document.getElementById('picker2'),
+            showSeconds: true,
+            initialValue: '2024:03:15 14:30:45'
+        });
+
+        // Without seconds
+        new CustomDateTimePicker({
+            container: document.getElementById('picker3'),
+            showSeconds: false,
+            initialValue: '2024:03:15 14:30:00'
+        });
+
+        // Mobile view
+        new CustomDateTimePicker({
+            container: document.getElementById('picker4'),
+            showSeconds: false,
+            initialValue: '2024:03:15 14:30:00'
+        });
+
+        // Side-by-side test
+        new CustomDateTimePicker({
+            container: document.getElementById('picker5'),
+            showSeconds: false,
+            initialValue: '2024:01:01 08:00:00'
+        });
+
+        new CustomDateTimePicker({
+            container: document.getElementById('picker6'),
+            showSeconds: false,
+            initialValue: '2024:12:31 23:59:00'
+        });
+    </script>
+</body>
+</html>
