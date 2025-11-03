@@ -18,6 +18,10 @@ type EXIFField = {
   valueOffset: number;
   value: number | string | number[];
   type: "date" | "datetime" | "time";
+  // Optional fields for combined GPS datetime
+  _gpsDateTag?: number;
+  _gpsDateOffset?: number;
+  _gpsDateCount?: number;
 };
 
 // EXIF tag numbers we care about
@@ -504,6 +508,51 @@ function downloadModified(filename: string) {
     } else {
       // Use the original fromInputDateTime function
       newVal = fromInputDateTime(inp.value);
+      
+      // For combined GPS datetime, convert to UTC and split into date and time
+      if (field.ifd === "GPS" && field.name === "GPSDateTime" && typeof newVal === "string") {
+        // Parse the local datetime string "YYYY:MM:DD HH:MM:SS"
+        const match = newVal.match(/(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+        if (match) {
+          const [_, y, m, d, hh, mm, ss] = match;
+          
+          // Create local date object
+          const localDate = new Date(
+            parseInt(y),
+            parseInt(m) - 1,
+            parseInt(d),
+            parseInt(hh),
+            parseInt(mm),
+            parseInt(ss)
+          );
+          
+          // Convert to UTC
+          const utcYear = localDate.getUTCFullYear();
+          const utcMonth = (localDate.getUTCMonth() + 1).toString().padStart(2, "0");
+          const utcDay = localDate.getUTCDate().toString().padStart(2, "0");
+          const utcHours = localDate.getUTCHours();
+          const utcMinutes = localDate.getUTCMinutes();
+          const utcSeconds = localDate.getUTCSeconds();
+          
+          // Write the GPS date stamp
+          if (field._gpsDateTag && field._gpsDateOffset && field._gpsDateCount) {
+            const dateStr = `${utcYear}:${utcMonth}:${utcDay}`;
+            const dateBytes = new Uint8Array(field._gpsDateCount);
+            const encoder = new TextEncoder();
+            const encoded = encoder.encode(dateStr);
+            const len = Math.min(encoded.length, field._gpsDateCount - 1);
+            dateBytes.set(encoded.subarray(0, len), 0);
+            dateBytes[len] = 0; // null terminate
+            
+            for (let i = 0; i < field._gpsDateCount; i++) {
+              dv.setUint8(field._gpsDateOffset + i, dateBytes[i]);
+            }
+          }
+          
+          // Update newVal to be the time array for the GPS timestamp
+          newVal = [utcHours, utcMinutes, utcSeconds];
+        }
+      }
     }
 
     if (newVal.length === 0) {
@@ -515,7 +564,7 @@ function downloadModified(filename: string) {
     const count = field.count;
 
     let bytes =
-      field.type === "time"
+      field.type === "time" || (field.type === "datetime" && field.name === "GPSDateTime")
         ? new Uint32Array(count * 2)
         : new Uint8Array(count);
 
@@ -546,6 +595,7 @@ function downloadModified(filename: string) {
         dv.setUint8(abs + i, bytes[i]);
       }
     } else if (Array.isArray(target)) {
+      // This handles both GPSTimeStamp and the time component of GPSDateTime
       for (let i = 0; i < count; i++) {
         const abs = field.valueOffset + 8 * i;
 
@@ -829,32 +879,84 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
 
   if (gpsIFDOffset) {
     const gpsIFD = readIFD(gpsIFDOffset);
-    if (gpsIFD.entries.get(TAGS.GPSDateStamp)) {
-      const entry = gpsIFD.entries.get(TAGS.GPSDateStamp)!;
-      results.push({
-        label: "GPSDateStamp (GPS IFD)",
-        name: "GPSDateStamp",
-        ifd: "GPS",
-        tag: TAGS.GPSDateStamp,
-        count: entry.count,
-        valueOffset: entry.valueOffset,
-        value: entry.value,
-        type: "date",
-      });
-    }
+    const gpsDateEntry = gpsIFD.entries.get(TAGS.GPSDateStamp);
+    const gpsTimeEntry = gpsIFD.entries.get(TAGS.GPSTimeStamp);
 
-    if (gpsIFD.entries.get(TAGS.GPSTimeStamp)) {
-      const entry = gpsIFD.entries.get(TAGS.GPSTimeStamp)!;
-      results.push({
-        label: "GPSTimeStamp (GPS IFD)",
-        name: "GPSTimeStamp",
-        ifd: "GPS",
-        tag: TAGS.GPSTimeStamp,
-        count: entry.count,
-        valueOffset: entry.valueOffset,
-        value: entry.value,
-        type: "time",
-      });
+    // Combine GPS date and time into a single datetime field for easier editing
+    if (gpsDateEntry && gpsTimeEntry) {
+      const dateStr = gpsDateEntry.value as string; // "YYYY:MM:DD"
+      const timeArr = gpsTimeEntry.value as number[]; // [H, M, S] in UTC
+      
+      // Parse the date components
+      const dateMatch = dateStr.match(/(\d{4}):(\d{2}):(\d{2})/);
+      if (dateMatch && Array.isArray(timeArr) && timeArr.length === 3) {
+        const [_, year, month, day] = dateMatch;
+        const [h, m, s] = timeArr;
+        
+        // Create UTC datetime
+        const utcDate = new Date(
+          Date.UTC(
+            parseInt(year),
+            parseInt(month) - 1,
+            parseInt(day),
+            h,
+            m,
+            s || 0
+          )
+        );
+        
+        // Convert to local datetime string
+        const localYear = utcDate.getFullYear();
+        const localMonth = (utcDate.getMonth() + 1).toString().padStart(2, "0");
+        const localDay = utcDate.getDate().toString().padStart(2, "0");
+        const localHours = utcDate.getHours().toString().padStart(2, "0");
+        const localMinutes = utcDate.getMinutes().toString().padStart(2, "0");
+        const localSeconds = utcDate.getSeconds().toString().padStart(2, "0");
+        
+        const localDateTimeStr = `${localYear}:${localMonth}:${localDay} ${localHours}:${localMinutes}:${localSeconds}`;
+        
+        results.push({
+          label: "GPS DateTime (GPS IFD)",
+          name: "GPSDateTime",
+          ifd: "GPS",
+          tag: TAGS.GPSTimeStamp, // Use timestamp tag as primary
+          count: gpsTimeEntry.count,
+          valueOffset: gpsTimeEntry.valueOffset,
+          value: localDateTimeStr,
+          type: "datetime",
+          // Store references to both entries for saving later
+          _gpsDateTag: TAGS.GPSDateStamp,
+          _gpsDateOffset: gpsDateEntry.valueOffset,
+          _gpsDateCount: gpsDateEntry.count,
+        } as any);
+      }
+    } else {
+      // Fall back to showing separate fields if only one is present
+      if (gpsDateEntry) {
+        results.push({
+          label: "GPSDateStamp (GPS IFD)",
+          name: "GPSDateStamp",
+          ifd: "GPS",
+          tag: TAGS.GPSDateStamp,
+          count: gpsDateEntry.count,
+          valueOffset: gpsDateEntry.valueOffset,
+          value: gpsDateEntry.value,
+          type: "date",
+        });
+      }
+
+      if (gpsTimeEntry) {
+        results.push({
+          label: "GPSTimeStamp (GPS IFD)",
+          name: "GPSTimeStamp",
+          ifd: "GPS",
+          tag: TAGS.GPSTimeStamp,
+          count: gpsTimeEntry.count,
+          valueOffset: gpsTimeEntry.valueOffset,
+          value: gpsTimeEntry.value,
+          type: "time",
+        });
+      }
     }
   }
 
