@@ -1,5 +1,6 @@
-import { isExifJpeg } from "./exif";
 import { FileReader } from "./FileReader";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 
 type IDF = {
   type: number;
@@ -17,19 +18,70 @@ type EXIFField = {
   count: number;
   valueOffset: number;
   value: number | string | number[];
-  type: "date" | "datetime" | "time";
+  type: "date" | "datetime" | "time" | "coordinate" | "number";
   // Optional fields for combined GPS datetime
   _gpsDateTag?: number;
   _gpsDateOffset?: number;
   _gpsDateCount?: number;
+  _gpsRefOffset?: number;
+  _gpsRefCount?: number;
+  _gpsAltitudeRefOffset?: number;
+};
+
+type DateTimePickerState = {
+  root: HTMLDivElement;
+  hiddenInput: HTMLInputElement;
+  monthInput: HTMLInputElement;
+  dayInput: HTMLInputElement;
+  yearInput: HTMLInputElement;
+  visibleHourInput: HTMLInputElement;
+  visibleMinuteInput: HTMLInputElement;
+  visibleSecondInput: HTMLInputElement;
+  visibleMeridiemInput: HTMLInputElement;
+  toggleButton: HTMLButtonElement;
+  popup: HTMLDivElement;
+  monthLabel: HTMLDivElement;
+  dayGrid: HTMLDivElement;
+  hourInput: HTMLInputElement;
+  minuteInput: HTMLInputElement;
+  secondInput: HTMLInputElement;
+  meridiemSelect: HTMLSelectElement;
+  selectedDate: Date;
+  viewYear: number;
+  viewMonth: number;
+};
+
+type LoadedFile = {
+  id: string;
+  filename: string;
+  workingBuffer: ArrayBuffer;
+  parsedFields: EXIFField[];
+  previewUrl: string;
+  gpsMap?: L.Map | null;
+  gpsMarker?: L.Marker | null;
+  elements?: {
+    container: HTMLDivElement;
+    form: HTMLFormElement;
+    gpsEditor: HTMLDivElement;
+    gpsMapEl: HTMLDivElement;
+    gpsHint: HTMLDivElement;
+  };
 };
 
 // EXIF tag numbers we care about
 const TAGS = {
   DateTime: 0x0132, // Image IFD
+  ModifyDate: 0x0132, // alias for Image DateTime in many EXIF tools
   ExifIFDPointer: 0x8769, // pointer from 0th to Exif
   GPSInfoIFDPointer: 0x8825, // pointer from 0th to GPS
+  GPSLatitudeRef: 0x0001,
+  GPSLatitude: 0x0002,
+  GPSLongitudeRef: 0x0003,
+  GPSLongitude: 0x0004,
+  GPSAltitudeRef: 0x0005,
+  GPSAltitude: 0x0006,
   DateTimeOriginal: 0x9003, // Exif
+  CreateDate: 0x9004, // alias for DateTimeDigitized
   DateTimeDigitized: 0x9004, // Exif
   GPSDateStamp: 0x001d, // GPSDateStamp
   GPSTimeStamp: 0x0007, // GPSTimeStamp
@@ -44,23 +96,35 @@ const TAGS = {
 };
 
 // State
-let originalBuffer: ArrayBuffer | null = null; // ArrayBuffer
-let workingBuffer: ArrayBuffer | null = null; // modifiable copy
-let parsedFields: EXIFField[] = [];
+let activeDateTimePicker: DateTimePickerState | null = null;
+let loadedFiles: LoadedFile[] = [];
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+const WEEKDAY_NAMES = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
 const uploader = document.getElementById("uploader") as HTMLDivElement;
 const fileInput = document.getElementById("fileInput") as HTMLInputElement;
-const preview = document.getElementById("preview") as HTMLImageElement;
-const previewInfo = document.getElementById("preview-info") as HTMLDivElement;
-const previewInfoText = document.getElementById(
-  "preview-info-text"
+const imageModal = document.getElementById("imageModal") as HTMLDivElement;
+const imageModalBackdrop = document.getElementById(
+  "imageModalBackdrop"
 ) as HTMLDivElement;
-const fieldsForm = document.getElementById("fields") as HTMLFormElement;
-const main = document.getElementById("main") as HTMLDivElement;
+const modalPreview = document.getElementById("modalPreview") as HTMLImageElement;
+const fileListEl = document.getElementById("fileList") as HTMLDivElement;
 const status = document.getElementById("status") as HTMLDivElement;
-const filenameEl = document.getElementById("filename") as HTMLDivElement;
-const clearBtn = document.getElementById("clearBtn") as HTMLButtonElement;
-const downloadBtn = document.getElementById("downloadBtn") as HTMLButtonElement;
 
 // drag/drop
 uploader.addEventListener("click", () => fileInput.click());
@@ -95,11 +159,27 @@ uploader.addEventListener("mouseleave", () => {
 
 fileInput.addEventListener("change", () => handleFileList(fileInput.files));
 
-let currentFilename = "";
+imageModalBackdrop.addEventListener("click", closeImageModal);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !imageModal.hidden) {
+    closeImageModal();
+  }
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!activeDateTimePicker) {
+    return;
+  }
 
-clearBtn.addEventListener("click", clearAll);
-downloadBtn.addEventListener("click", () => {
-  downloadModified(currentFilename);
+  const target = event.target;
+  if (target instanceof Node && !activeDateTimePicker.root.contains(target)) {
+    closeDateTimePicker();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && activeDateTimePicker) {
+    event.preventDefault();
+    closeDateTimePicker(true);
+  }
 });
 
 async function handleFileList(list: FileList | null) {
@@ -108,88 +188,1072 @@ async function handleFileList(list: FileList | null) {
     return;
   }
 
-  if (list.length > 1) {
-    alert("Only one file can be uploaded at a time.");
+  const addedFiles: LoadedFile[] = [];
+
+  for (const file of Array.from(list)) {
+    if (file.type !== "image/jpeg" && !/\.jpe?g$/i.test(file.name)) {
+      continue;
+    }
+
+    const fileReader = new FileReader();
+    const originalBuffer = await fileReader.readAsArrayBuffer(file);
+    const workingBuffer = originalBuffer.slice(0);
+    let fileFields: EXIFField[] = [];
+
+    try {
+      fileFields = parseExifDates(workingBuffer);
+    } catch (err) {
+      console.error(err);
+    }
+
+    addedFiles.push({
+      id: crypto.randomUUID(),
+      filename: file.name,
+      workingBuffer,
+      parsedFields: fileFields,
+      previewUrl: URL.createObjectURL(file),
+    });
   }
 
-  const file = list[0];
-
-  // console.log(isExifJpeg(new DataView(await file.arrayBuffer())));
-
-  if (file.type !== "image/jpeg" && !/\.jpe?g$/i.test(file.name)) {
-    const fileReader = new FileReader();
-    const arrayBuffer = await fileReader.readAsArrayBuffer(file);
-
-    if (isExifJpeg(new DataView(arrayBuffer))) {
-      alert("Only JPEG images are supported by this demo.");
-    }
+  if (!addedFiles.length) {
+    alert("Only JPEG images are supported by this demo.");
     return;
   }
 
-  filenameEl.textContent = file.name;
-  currentFilename = file.name;
-  status.textContent = "Reading file...";
-  clearState();
-
-  const fileReader = new FileReader();
-
-  originalBuffer = await fileReader.readAsArrayBuffer(file);
-
-  // create a working copy
-  workingBuffer = originalBuffer.slice(0);
-
-  // show preview
-  preview.src = URL.createObjectURL(file);
-  previewInfo.style.display = "flex";
-  previewInfoText.textContent = file.name;
-  main.style.display = "flex";
-
-  status.textContent = "Parsing EXIF...";
-
-  try {
-    parsedFields = parseExifDates(workingBuffer);
-  } catch (err) {
-    console.error(err);
-    status.textContent =
-      "No EXIF date fields found or not a standard JPEG with EXIF.";
-    parsedFields = [];
+  loadedFiles = [...loadedFiles, ...addedFiles];
+  for (const file of addedFiles) {
+    appendFileEditor(file);
   }
+  updateStatus();
 
-  renderFields(parsedFields);
-  status.textContent = parsedFields.length
-    ? "Found " + parsedFields.length + " date/time field(s)."
-    : "No editable EXIF date/time fields found.";
-  clearBtn.disabled = false;
-  downloadBtn.disabled = false;
-}
-
-function clearState() {
-  parsedFields = [];
-  fieldsForm.innerHTML = "";
-  main.style.display = "none";
-  preview.src = "";
-  previewInfo.style.display = "none";
-  previewInfoText.textContent = "";
-  filenameEl.textContent = "";
-  status.textContent = "No file loaded";
-  clearBtn.disabled = true;
-  downloadBtn.disabled = true;
-}
-function clearAll() {
-  originalBuffer = null;
-  workingBuffer = null;
-  clearState();
-
-  // Reset the file input so the same file can be uploaded again
   if (fileInput) {
     fileInput.value = "";
   }
 }
 
-function renderFields(fields: EXIFField[]) {
-  fieldsForm.innerHTML = "";
+function updateStatus() {
+  status.textContent = loadedFiles.length
+    ? `${loadedFiles.length} file(s) loaded`
+    : "No files loaded";
+}
 
-  if (!fields.length) {
+function removeLoadedFile(fileId: string) {
+  const fileIndex = loadedFiles.findIndex((file) => file.id === fileId);
+  if (fileIndex === -1) {
+    return;
+  }
+
+  const [removed] = loadedFiles.splice(fileIndex, 1);
+  URL.revokeObjectURL(removed.previewUrl);
+  removed.gpsMap?.remove();
+  removed.elements?.container.remove();
+  updateStatus();
+
+  if (!loadedFiles.length) {
+    closeImageModal();
+    if (fileInput) {
+      fileInput.value = "";
+    }
+  }
+}
+
+function downloadLoadedFile(fileId: string) {
+  const file = loadedFiles.find((item) => item.id === fileId);
+  if (!file) {
+    return;
+  }
+
+  applyFormToWorkingBuffer(file);
+  const blob = new Blob([file.workingBuffer], { type: "image/jpeg" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = file.filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  status.textContent = `Downloaded ${file.filename}.`;
+}
+
+function openImageModal(imageUrl: string) {
+  if (!imageUrl) {
+    return;
+  }
+
+  modalPreview.src = imageUrl;
+  imageModal.hidden = false;
+  document.body.classList.add("modal-open");
+}
+
+function closeImageModal() {
+  imageModal.hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+function parseInputDateTimeValue(value: string) {
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/
+  );
+
+  if (!match) {
+    return null;
+  }
+
+  const [, y, m, d, hh, mm, ss = "00"] = match;
+  const date = new Date(
+    Number(y),
+    Number(m) - 1,
+    Number(d),
+    Number(hh),
+    Number(mm),
+    Number(ss)
+  );
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date;
+}
+
+function formatPickerDateTimeValue(date: Date) {
+  const y = date.getFullYear().toString().padStart(4, "0");
+  const m = (date.getMonth() + 1).toString().padStart(2, "0");
+  const d = date.getDate().toString().padStart(2, "0");
+  const hh = date.getHours().toString().padStart(2, "0");
+  const mm = date.getMinutes().toString().padStart(2, "0");
+  const ss = date.getSeconds().toString().padStart(2, "0");
+
+  return `${y}-${m}-${d}T${hh}:${mm}:${ss}`;
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  if (Number.isNaN(value)) {
+    return min;
+  }
+
+  return Math.min(max, Math.max(min, value));
+}
+
+function daysInMonth(year: number, month: number) {
+  return new Date(year, month, 0).getDate();
+}
+
+function getExifLittleEndian(view: DataView) {
+  let offset = 2;
+  let exifStartOffset = -1;
+
+  while (offset < view.byteLength) {
+    if (offset + 4 > view.byteLength) {
+      break;
+    }
+
+    const marker = view.getUint16(offset, false);
+    offset += 2;
+
+    if (marker === TAGS.END_OF_IMAGE) {
+      break;
+    }
+
+    if ((marker & TAGS.VALID_MARKER_PREFIX) !== TAGS.VALID_MARKER_PREFIX) {
+      break;
+    }
+
+    const segLen = view.getUint16(offset, false);
+    if (marker === TAGS.APP1_MARKER) {
+      const potential = offset + 2;
+      if (potential + 6 <= view.byteLength) {
+        const hdr = new DataView(view.buffer, potential, 6);
+        if (
+          hdr.getUint32(0, false) === TAGS.EXIF_HEADER &&
+          hdr.getUint16(4, false) === 0
+        ) {
+          exifStartOffset = potential + 6;
+          break;
+        }
+      }
+    }
+
+    offset += segLen;
+  }
+
+  if (exifStartOffset === -1) {
+    return false;
+  }
+
+  return view.getUint16(exifStartOffset, false) === TAGS.LITTLE_ENDIAN;
+}
+
+function decimalFromDms(parts: number[], ref: string) {
+  if (!Array.isArray(parts) || parts.length !== 3) {
+    return null;
+  }
+
+  const decimal = parts[0] + parts[1] / 60 + parts[2] / 3600;
+  return ref === "S" || ref === "W" ? -decimal : decimal;
+}
+
+function dmsFromDecimal(decimal: number) {
+  const absolute = Math.abs(decimal);
+  const degrees = Math.floor(absolute);
+  const minutesFull = (absolute - degrees) * 60;
+  const minutes = Math.floor(minutesFull);
+  const seconds = (minutesFull - minutes) * 60;
+
+  return [degrees, minutes, seconds];
+}
+
+function addDays(date: Date, amount: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + amount);
+  return next;
+}
+
+function addMonths(date: Date, amount: number) {
+  const next = new Date(date);
+  next.setMonth(next.getMonth() + amount);
+  return next;
+}
+
+function setPickerDate(state: DateTimePickerState, nextDate: Date) {
+  state.selectedDate = new Date(
+    nextDate.getFullYear(),
+    nextDate.getMonth(),
+    nextDate.getDate(),
+    state.selectedDate.getHours(),
+    state.selectedDate.getMinutes(),
+    state.selectedDate.getSeconds()
+  );
+  state.viewYear = state.selectedDate.getFullYear();
+  state.viewMonth = state.selectedDate.getMonth();
+  renderDateTimePicker(state);
+}
+
+function setPickerTimePart(
+  state: DateTimePickerState,
+  part: "hours12" | "minutes" | "seconds" | "meridiem",
+  value: number
+) {
+  const next = new Date(state.selectedDate);
+
+  if (part === "hours12") {
+    const currentHours = next.getHours();
+    const isPm = currentHours >= 12;
+    const normalized = clampNumber(value, 1, 12) % 12;
+    next.setHours(normalized + (isPm ? 12 : 0));
+  } else if (part === "minutes") {
+    next.setMinutes(clampNumber(value, 0, 59));
+  } else if (part === "seconds") {
+    next.setSeconds(clampNumber(value, 0, 59));
+  } else {
+    const currentHours = next.getHours();
+    const isPm = value === 1;
+    const hourBase = currentHours % 12;
+    next.setHours(hourBase + (isPm ? 12 : 0));
+  }
+
+  state.selectedDate = next;
+  syncDateTimePickerValue(state);
+}
+
+function commitVisibleDateTimeSegments(state: DateTimePickerState) {
+  const month = clampNumber(Number(state.monthInput.value), 1, 12);
+  const year = clampNumber(Number(state.yearInput.value), 1, 9999);
+  const maxDay = daysInMonth(year, month);
+  const day = clampNumber(Number(state.dayInput.value), 1, maxDay);
+  const hour12 = clampNumber(Number(state.visibleHourInput.value), 1, 12);
+  const minute = clampNumber(Number(state.visibleMinuteInput.value), 0, 59);
+  const second = clampNumber(Number(state.visibleSecondInput.value), 0, 59);
+  const rawMeridiem = state.visibleMeridiemInput.value.trim().toUpperCase();
+  const meridiem =
+    rawMeridiem === "P" || rawMeridiem === "PM"
+      ? "PM"
+      : rawMeridiem === "A" || rawMeridiem === "AM"
+        ? "AM"
+        : state.selectedDate.getHours() >= 12
+          ? "PM"
+          : "AM";
+
+  let hour24 = hour12 % 12;
+  if (meridiem === "PM") {
+    hour24 += 12;
+  }
+
+  const next = new Date(year, month - 1, day, hour24, minute, second);
+  if (Number.isNaN(next.getTime())) {
+    syncDateTimePickerValue(state);
+    return false;
+  }
+
+  state.selectedDate = next;
+  state.viewYear = next.getFullYear();
+  state.viewMonth = next.getMonth();
+  renderDateTimePicker(state);
+  return true;
+}
+
+function adjustVisibleSegmentValue(
+  state: DateTimePickerState,
+  segment:
+    | "month"
+    | "day"
+    | "year"
+    | "hour"
+    | "minute"
+    | "second"
+    | "meridiem",
+  delta: number
+) {
+  const next = new Date(state.selectedDate);
+
+  if (segment === "month") {
+    next.setMonth(next.getMonth() + delta);
+  } else if (segment === "day") {
+    next.setDate(next.getDate() + delta);
+  } else if (segment === "year") {
+    next.setFullYear(next.getFullYear() + delta);
+  } else if (segment === "hour") {
+    next.setHours(next.getHours() + delta);
+  } else if (segment === "minute") {
+    next.setMinutes(next.getMinutes() + delta);
+  } else if (segment === "second") {
+    next.setSeconds(next.getSeconds() + delta);
+  } else {
+    next.setHours((next.getHours() + 12) % 24);
+  }
+
+  state.selectedDate = next;
+  state.viewYear = next.getFullYear();
+  state.viewMonth = next.getMonth();
+  renderDateTimePicker(state);
+}
+
+function syncDateTimePickerValue(state: DateTimePickerState) {
+  state.hiddenInput.value = formatPickerDateTimeValue(state.selectedDate);
+  state.monthInput.value = (state.selectedDate.getMonth() + 1)
+    .toString()
+    .padStart(2, "0");
+  state.dayInput.value = state.selectedDate.getDate().toString().padStart(2, "0");
+  state.yearInput.value = state.selectedDate.getFullYear().toString().padStart(4, "0");
+  const hours24 = state.selectedDate.getHours();
+  const hours12 = hours24 % 12 || 12;
+  state.visibleHourInput.value = hours12.toString().padStart(2, "0");
+  state.visibleMinuteInput.value = state.selectedDate
+    .getMinutes()
+    .toString()
+    .padStart(2, "0");
+  state.visibleSecondInput.value = state.selectedDate
+    .getSeconds()
+    .toString()
+    .padStart(2, "0");
+  state.visibleMeridiemInput.value = hours24 >= 12 ? "PM" : "AM";
+  state.hourInput.value = hours12.toString().padStart(2, "0");
+  state.minuteInput.value = state.selectedDate
+    .getMinutes()
+    .toString()
+    .padStart(2, "0");
+  state.secondInput.value = state.selectedDate
+    .getSeconds()
+    .toString()
+    .padStart(2, "0");
+  state.meridiemSelect.value = hours24 >= 12 ? "PM" : "AM";
+}
+
+function focusSelectedDay(state: DateTimePickerState) {
+  const selectedValue = `${state.selectedDate.getFullYear()}-${(
+    state.selectedDate.getMonth() + 1
+  )
+    .toString()
+    .padStart(2, "0")}-${state.selectedDate
+    .getDate()
+    .toString()
+    .padStart(2, "0")}`;
+
+  const selectedButton = state.dayGrid.querySelector(
+    `[data-date="${selectedValue}"]`
+  ) as HTMLButtonElement | null;
+
+  selectedButton?.focus();
+}
+
+function renderDateTimePicker(state: DateTimePickerState) {
+  syncDateTimePickerValue(state);
+  state.monthLabel.textContent = `${MONTH_NAMES[state.viewMonth]} ${state.viewYear}`;
+  state.dayGrid.innerHTML = "";
+
+  const monthStart = new Date(state.viewYear, state.viewMonth, 1);
+  const calendarStart = addDays(monthStart, -monthStart.getDay());
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const selectedDay = new Date(state.selectedDate);
+  selectedDay.setHours(0, 0, 0, 0);
+
+  for (let i = 0; i < 42; i++) {
+    const day = addDays(calendarStart, i);
+    const dayButton = document.createElement("button");
+    const isoDate = `${day.getFullYear()}-${(day.getMonth() + 1)
+      .toString()
+      .padStart(2, "0")}-${day.getDate().toString().padStart(2, "0")}`;
+    const isCurrentMonth = day.getMonth() === state.viewMonth;
+    const isToday = day.getTime() === today.getTime();
+    const isSelected = day.getTime() === selectedDay.getTime();
+
+    dayButton.type = "button";
+    dayButton.className = "datetime-picker-day";
+    if (!isCurrentMonth) {
+      dayButton.classList.add("is-outside-month");
+    }
+    if (isToday) {
+      dayButton.classList.add("is-today");
+    }
+    if (isSelected) {
+      dayButton.classList.add("is-selected");
+    }
+
+    dayButton.dataset.date = isoDate;
+    dayButton.textContent = day.getDate().toString();
+    dayButton.tabIndex = isSelected ? 0 : -1;
+    dayButton.setAttribute(
+      "aria-label",
+      day.toLocaleDateString(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      })
+    );
+
+    dayButton.addEventListener("click", () => {
+      setPickerDate(state, day);
+    });
+
+    dayButton.addEventListener("keydown", (event) => {
+      let nextDate: Date | null = null;
+
+      if (event.key === "ArrowLeft") {
+        nextDate = addDays(state.selectedDate, -1);
+      } else if (event.key === "ArrowRight") {
+        nextDate = addDays(state.selectedDate, 1);
+      } else if (event.key === "ArrowUp") {
+        nextDate = addDays(state.selectedDate, -7);
+      } else if (event.key === "ArrowDown") {
+        nextDate = addDays(state.selectedDate, 7);
+      } else if (event.key === "PageUp") {
+        nextDate = addMonths(state.selectedDate, event.shiftKey ? -12 : -1);
+      } else if (event.key === "PageDown") {
+        nextDate = addMonths(state.selectedDate, event.shiftKey ? 12 : 1);
+      } else if (event.key === "Home") {
+        nextDate = addDays(state.selectedDate, -state.selectedDate.getDay());
+      } else if (event.key === "End") {
+        nextDate = addDays(state.selectedDate, 6 - state.selectedDate.getDay());
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        setPickerDate(state, day);
+        return;
+      }
+
+      if (!nextDate) {
+        return;
+      }
+
+      event.preventDefault();
+      setPickerDate(state, nextDate);
+      requestAnimationFrame(() => focusSelectedDay(state));
+    });
+
+    state.dayGrid.appendChild(dayButton);
+  }
+}
+
+function openDateTimePicker(state: DateTimePickerState) {
+  if (activeDateTimePicker && activeDateTimePicker !== state) {
+    closeDateTimePicker();
+  }
+
+  activeDateTimePicker = state;
+  state.root.classList.add("is-open");
+  state.popup.hidden = false;
+  state.monthInput.setAttribute("aria-expanded", "true");
+  state.toggleButton.setAttribute("aria-expanded", "true");
+  renderDateTimePicker(state);
+  requestAnimationFrame(() => focusSelectedDay(state));
+}
+
+function closeDateTimePicker(restoreFocus = false) {
+  if (!activeDateTimePicker) {
+    return;
+  }
+
+  const current = activeDateTimePicker;
+  current.root.classList.remove("is-open");
+  current.popup.hidden = true;
+  current.monthInput.setAttribute("aria-expanded", "false");
+  current.toggleButton.setAttribute("aria-expanded", "false");
+  activeDateTimePicker = null;
+
+  if (restoreFocus) {
+    current.monthInput.focus();
+  }
+}
+
+function createDateTimePicker(idx: number, labelId: string, initialValue: string) {
+  const initialDate = parseInputDateTimeValue(initialValue) ?? new Date();
+  const root = document.createElement("div");
+  const hiddenInput = document.createElement("input");
+  const field = document.createElement("div");
+  const segmentGroup = document.createElement("div");
+  const monthInput = document.createElement("input");
+  const dayInput = document.createElement("input");
+  const yearInput = document.createElement("input");
+  const visibleHourInput = document.createElement("input");
+  const visibleMinuteInput = document.createElement("input");
+  const visibleSecondInput = document.createElement("input");
+  const visibleMeridiemInput = document.createElement("input");
+  const toggleButton = document.createElement("button");
+  const popup = document.createElement("div");
+  const header = document.createElement("div");
+  const prevButton = document.createElement("button");
+  const nextButton = document.createElement("button");
+  const monthLabel = document.createElement("div");
+  const weekdays = document.createElement("div");
+  const dayGrid = document.createElement("div");
+  const timePanel = document.createElement("div");
+  const timeLabel = document.createElement("div");
+  const timeFields = document.createElement("div");
+  const hourInput = document.createElement("input");
+  const minuteInput = document.createElement("input");
+  const secondInput = document.createElement("input");
+  const meridiemSelect = document.createElement("select");
+  const controlId = `field-${idx}`;
+  const popupId = `field-${idx}-picker`;
+
+  root.className = "datetime-picker";
+  field.className = "datetime-picker-field";
+  segmentGroup.className = "datetime-picker-segments";
+
+  hiddenInput.type = "hidden";
+  hiddenInput.dataset.idx = idx.toString();
+  hiddenInput.dataset.fieldInput = "true";
+
+  const visibleInputs = [
+    { input: monthInput, label: "Month", widthClass: "is-short", maxLength: 2 },
+    { input: dayInput, label: "Day", widthClass: "is-short", maxLength: 2 },
+    { input: yearInput, label: "Year", widthClass: "is-year", maxLength: 4 },
+    {
+      input: visibleHourInput,
+      label: "Hour",
+      widthClass: "is-short",
+      maxLength: 2,
+    },
+    {
+      input: visibleMinuteInput,
+      label: "Minute",
+      widthClass: "is-short",
+      maxLength: 2,
+    },
+    {
+      input: visibleSecondInput,
+      label: "Second",
+      widthClass: "is-short",
+      maxLength: 2,
+    },
+  ];
+
+  visibleInputs.forEach(({ input, label, widthClass, maxLength }) => {
+    input.type = "text";
+    input.className = `datetime-picker-segment ${widthClass}`;
+    input.inputMode = "numeric";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.maxLength = maxLength;
+    input.setAttribute("aria-label", label);
+    input.setAttribute("aria-haspopup", "dialog");
+    input.setAttribute("aria-expanded", "false");
+    input.setAttribute("aria-controls", popupId);
+    input.setAttribute("aria-labelledby", labelId);
+  });
+
+  monthInput.id = controlId;
+
+  toggleButton.type = "button";
+  toggleButton.className = "datetime-picker-toggle";
+  toggleButton.setAttribute("aria-label", "Open date and time picker");
+  toggleButton.setAttribute("aria-haspopup", "dialog");
+  toggleButton.setAttribute("aria-expanded", "false");
+  toggleButton.setAttribute("aria-controls", popupId);
+  toggleButton.innerHTML =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a2 2 0 0 1 2 2v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a2 2 0 0 1 2-2h1V3a1 1 0 0 1 1-1Zm12 8H5v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8ZM6 6a1 1 0 0 0-1 1v1h14V7a1 1 0 0 0-1-1H6Zm2 6h3v3H8v-3Z"/></svg>';
+
+  visibleMeridiemInput.type = "text";
+  visibleMeridiemInput.className = "datetime-picker-visible-meridiem";
+  visibleMeridiemInput.inputMode = "text";
+  visibleMeridiemInput.autocomplete = "off";
+  visibleMeridiemInput.spellcheck = false;
+  visibleMeridiemInput.maxLength = 2;
+  visibleMeridiemInput.setAttribute("aria-label", "AM or PM");
+  visibleMeridiemInput.setAttribute("aria-haspopup", "dialog");
+  visibleMeridiemInput.setAttribute("aria-expanded", "false");
+  visibleMeridiemInput.setAttribute("aria-controls", popupId);
+  visibleMeridiemInput.setAttribute("aria-labelledby", labelId);
+
+  popup.id = popupId;
+  popup.hidden = true;
+  popup.className = "datetime-picker-popup";
+  popup.setAttribute("role", "dialog");
+  popup.setAttribute("aria-label", "Choose date and time");
+
+  header.className = "datetime-picker-header";
+
+  prevButton.type = "button";
+  prevButton.className = "datetime-picker-nav";
+  prevButton.setAttribute("aria-label", "Previous month");
+  prevButton.textContent = "‹";
+
+  nextButton.type = "button";
+  nextButton.className = "datetime-picker-nav";
+  nextButton.setAttribute("aria-label", "Next month");
+  nextButton.textContent = "›";
+
+  monthLabel.className = "datetime-picker-month";
+
+  weekdays.className = "datetime-picker-weekdays";
+  for (const dayName of WEEKDAY_NAMES) {
+    const dayCell = document.createElement("div");
+    dayCell.textContent = dayName;
+    weekdays.appendChild(dayCell);
+  }
+
+  dayGrid.className = "datetime-picker-grid";
+
+  timePanel.className = "datetime-picker-time";
+  timeLabel.className = "datetime-picker-time-label";
+  timeLabel.textContent = "Time";
+  timeFields.className = "datetime-picker-time-fields";
+
+  const timeInputs = [
+    { input: hourInput, label: "Hour", max: "12" },
+    { input: minuteInput, label: "Minute", max: "59" },
+    { input: secondInput, label: "Second", max: "59" },
+  ];
+
+  timeInputs.forEach(({ input, label, max }, position) => {
+    input.type = "number";
+    input.className = "datetime-picker-time-input";
+    input.min = "0";
+    input.max = max;
+    input.step = "1";
+    input.inputMode = "numeric";
+    input.setAttribute("aria-label", label);
+
+    input.addEventListener("focus", () => input.select());
+    input.addEventListener("input", () => {
+      const value = clampNumber(Number(input.value), 0, Number(max));
+      if (label === "Hour") {
+        setPickerTimePart(state, "hours12", value);
+      } else if (label === "Minute") {
+        setPickerTimePart(state, "minutes", value);
+      } else {
+        setPickerTimePart(state, "seconds", value);
+      }
+    });
+    input.addEventListener("blur", () => {
+      input.value = clampNumber(Number(input.value), 0, Number(max))
+        .toString()
+        .padStart(2, "0");
+    });
+
+    timeFields.appendChild(input);
+
+    if (position < timeInputs.length - 1) {
+      const separator = document.createElement("span");
+      separator.className = "datetime-picker-time-separator";
+      separator.textContent = ":";
+      timeFields.appendChild(separator);
+    }
+  });
+
+  meridiemSelect.className = "datetime-picker-meridiem";
+  meridiemSelect.setAttribute("aria-label", "AM or PM");
+  for (const value of ["AM", "PM"]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    meridiemSelect.appendChild(option);
+  }
+  meridiemSelect.addEventListener("change", () => {
+    setPickerTimePart(state, "meridiem", meridiemSelect.value === "PM" ? 1 : 0);
+  });
+
+  timePanel.appendChild(timeLabel);
+  timePanel.appendChild(timeFields);
+  timePanel.appendChild(meridiemSelect);
+
+  header.appendChild(prevButton);
+  header.appendChild(monthLabel);
+  header.appendChild(nextButton);
+  popup.appendChild(header);
+  popup.appendChild(weekdays);
+  popup.appendChild(dayGrid);
+  popup.appendChild(timePanel);
+
+  const state: DateTimePickerState = {
+    root,
+    hiddenInput,
+    monthInput,
+    dayInput,
+    yearInput,
+    visibleHourInput,
+    visibleMinuteInput,
+    visibleSecondInput,
+    visibleMeridiemInput,
+    toggleButton,
+    popup,
+    monthLabel,
+    dayGrid,
+    hourInput,
+    minuteInput,
+    secondInput,
+    meridiemSelect,
+    selectedDate: initialDate,
+    viewYear: initialDate.getFullYear(),
+    viewMonth: initialDate.getMonth(),
+  };
+
+  prevButton.addEventListener("click", () => {
+    const next = addMonths(new Date(state.viewYear, state.viewMonth, 1), -1);
+    state.viewYear = next.getFullYear();
+    state.viewMonth = next.getMonth();
+    renderDateTimePicker(state);
+  });
+
+  nextButton.addEventListener("click", () => {
+    const next = addMonths(new Date(state.viewYear, state.viewMonth, 1), 1);
+    state.viewYear = next.getFullYear();
+    state.viewMonth = next.getMonth();
+    renderDateTimePicker(state);
+  });
+
+  function moveToNextSegment(currentIndex: number) {
+    const segments = [
+      monthInput,
+      dayInput,
+      yearInput,
+      visibleHourInput,
+      visibleMinuteInput,
+      visibleSecondInput,
+      visibleMeridiemInput,
+      toggleButton,
+    ];
+    const next = segments[currentIndex + 1];
+    next?.focus();
+    if ("select" in next && typeof next.select === "function") {
+      next.select();
+    }
+  }
+
+  function moveToPreviousSegment(currentIndex: number) {
+    const segments = [
+      monthInput,
+      dayInput,
+      yearInput,
+      visibleHourInput,
+      visibleMinuteInput,
+      visibleSecondInput,
+      visibleMeridiemInput,
+      toggleButton,
+    ];
+    const previous = segments[currentIndex - 1];
+    previous?.focus();
+    if ("select" in previous && typeof previous.select === "function") {
+      previous.select();
+    }
+  }
+
+  function wireVisibleSegment(
+    input: HTMLInputElement,
+    maxLength: number,
+    index: number,
+    segment:
+      | "month"
+      | "day"
+      | "year"
+      | "hour"
+      | "minute"
+      | "second"
+  ) {
+    input.addEventListener("focus", () => input.select());
+    input.addEventListener("input", () => {
+      input.value = input.value.replace(/\D/g, "").slice(0, maxLength);
+      if (input.value.length === maxLength) {
+        moveToNextSegment(index);
+      }
+    });
+    input.addEventListener("blur", () => {
+      commitVisibleDateTimeSegments(state);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft" && input.selectionStart === 0) {
+        event.preventDefault();
+        moveToPreviousSegment(index);
+        return;
+      }
+      if (
+        event.key === "ArrowRight" &&
+        input.selectionStart === input.value.length
+      ) {
+        event.preventDefault();
+        moveToNextSegment(index);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        commitVisibleDateTimeSegments(state);
+        adjustVisibleSegmentValue(state, segment, 1);
+        input.focus();
+        input.select();
+        return;
+      }
+      if (event.key === "ArrowDown" && !event.altKey) {
+        event.preventDefault();
+        commitVisibleDateTimeSegments(state);
+        adjustVisibleSegmentValue(state, segment, -1);
+        input.focus();
+        input.select();
+        return;
+      }
+      if (event.key === "ArrowDown" || (event.altKey && event.key === "ArrowDown")) {
+        event.preventDefault();
+        commitVisibleDateTimeSegments(state);
+        openDateTimePicker(state);
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        commitVisibleDateTimeSegments(state);
+        closeDateTimePicker();
+      }
+    });
+  }
+
+  wireVisibleSegment(monthInput, 2, 0, "month");
+  wireVisibleSegment(dayInput, 2, 1, "day");
+  wireVisibleSegment(yearInput, 4, 2, "year");
+  wireVisibleSegment(visibleHourInput, 2, 3, "hour");
+  wireVisibleSegment(visibleMinuteInput, 2, 4, "minute");
+  wireVisibleSegment(visibleSecondInput, 2, 5, "second");
+
+  visibleMeridiemInput.addEventListener("focus", () => visibleMeridiemInput.select());
+  visibleMeridiemInput.addEventListener("input", () => {
+    const normalized = visibleMeridiemInput.value
+      .replace(/[^apm]/gi, "")
+      .toUpperCase()
+      .slice(0, 2);
+    visibleMeridiemInput.value = normalized;
+  });
+  visibleMeridiemInput.addEventListener("blur", () => {
+    commitVisibleDateTimeSegments(state);
+  });
+
+  visibleMeridiemInput.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      visibleSecondInput.focus();
+      visibleSecondInput.select();
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      toggleButton.focus();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      adjustVisibleSegmentValue(state, "meridiem", 1);
+      visibleMeridiemInput.focus();
+      visibleMeridiemInput.select();
+    } else if (event.key === "ArrowDown" && !event.altKey) {
+      event.preventDefault();
+      adjustVisibleSegmentValue(state, "meridiem", -1);
+      visibleMeridiemInput.focus();
+      visibleMeridiemInput.select();
+    } else if (
+      event.key === "ArrowDown" ||
+      (event.altKey && event.key === "ArrowDown")
+    ) {
+      event.preventDefault();
+      commitVisibleDateTimeSegments(state);
+      openDateTimePicker(state);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      commitVisibleDateTimeSegments(state);
+      closeDateTimePicker();
+    }
+  });
+
+  toggleButton.addEventListener("click", () => {
+    if (activeDateTimePicker === state) {
+      closeDateTimePicker();
+      return;
+    }
+
+    commitVisibleDateTimeSegments(state);
+    openDateTimePicker(state);
+  });
+
+  toggleButton.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      visibleMeridiemInput.focus();
+      visibleMeridiemInput.select();
+    }
+  });
+
+  root.addEventListener("focusout", (event) => {
+    if (activeDateTimePicker !== state) {
+      return;
+    }
+
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && root.contains(nextTarget)) {
+      return;
+    }
+
+    window.setTimeout(() => {
+      if (activeDateTimePicker === state && !root.contains(document.activeElement)) {
+        closeDateTimePicker();
+      }
+    }, 0);
+  });
+
+  root.appendChild(hiddenInput);
+  const slash1 = document.createElement("span");
+  slash1.className = "datetime-picker-separator";
+  slash1.textContent = "/";
+  const slash2 = document.createElement("span");
+  slash2.className = "datetime-picker-separator";
+  slash2.textContent = "/";
+  const comma = document.createElement("span");
+  comma.className = "datetime-picker-separator is-comma";
+  comma.textContent = ",";
+  const colon1 = document.createElement("span");
+  colon1.className = "datetime-picker-separator";
+  colon1.textContent = ":";
+  const colon2 = document.createElement("span");
+  colon2.className = "datetime-picker-separator";
+  colon2.textContent = ":";
+
+  segmentGroup.appendChild(monthInput);
+  segmentGroup.appendChild(slash1);
+  segmentGroup.appendChild(dayInput);
+  segmentGroup.appendChild(slash2);
+  segmentGroup.appendChild(yearInput);
+  segmentGroup.appendChild(comma);
+  segmentGroup.appendChild(visibleHourInput);
+  segmentGroup.appendChild(colon1);
+  segmentGroup.appendChild(visibleMinuteInput);
+  segmentGroup.appendChild(colon2);
+  segmentGroup.appendChild(visibleSecondInput);
+  segmentGroup.appendChild(visibleMeridiemInput);
+
+  field.appendChild(segmentGroup);
+  field.appendChild(toggleButton);
+  root.appendChild(field);
+  root.appendChild(popup);
+
+  renderDateTimePicker(state);
+  return root;
+}
+
+function setupGpsEditor(file: LoadedFile) {
+  const { elements } = file;
+  if (!elements) {
+    return;
+  }
+
+  const latitudeField = file.parsedFields.find(
+    (field) => field.name === "GPSLatitude"
+  );
+  const longitudeField = file.parsedFields.find(
+    (field) => field.name === "GPSLongitude"
+  );
+
+  if (
+    !latitudeField ||
+    !longitudeField ||
+    typeof latitudeField.value !== "number" ||
+    typeof longitudeField.value !== "number"
+  ) {
+    elements.gpsEditor.style.display = "none";
+    file.gpsMap?.remove();
+    file.gpsMap = null;
+    file.gpsMarker = null;
+    return;
+  }
+
+  const latitudeInput = elements.form.querySelector(
+    `[data-idx="${file.parsedFields.indexOf(latitudeField)}"]`
+  ) as HTMLInputElement | null;
+  const longitudeInput = elements.form.querySelector(
+    `[data-idx="${file.parsedFields.indexOf(longitudeField)}"]`
+  ) as HTMLInputElement | null;
+  const altitudeField = file.parsedFields.find(
+    (field) => field.name === "GPSAltitude"
+  );
+  const altitudeInput =
+    altitudeField &&
+    (elements.form.querySelector(
+      `[data-idx="${file.parsedFields.indexOf(altitudeField)}"]`
+    ) as HTMLInputElement | null);
+
+  if (!latitudeInput || !longitudeInput) {
+    elements.gpsEditor.style.display = "none";
+    file.gpsMap?.remove();
+    file.gpsMap = null;
+    file.gpsMarker = null;
+    return;
+  }
+
+  elements.gpsEditor.style.display = "flex";
+  elements.gpsHint.textContent =
+    altitudeInput !== null
+      ? "Drag the marker or edit the GPS fields directly. Altitude stays editable below."
+      : "Drag the marker or edit the GPS fields directly.";
+
+  const updateMarkerPosition = () => {
+    const lat = Number(latitudeInput.value);
+    const lon = Number(longitudeInput.value);
+    if (Number.isNaN(lat) || Number.isNaN(lon)) {
+      return;
+    }
+
+    if (!file.gpsMap) {
+      file.gpsMap = L.map(elements.gpsMapEl).setView([lat, lon], 13);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "&copy; OpenStreetMap contributors",
+      }).addTo(file.gpsMap);
+      file.gpsMarker = L.marker([lat, lon], { draggable: true }).addTo(file.gpsMap);
+      file.gpsMarker.on("dragend", () => {
+        const markerLatLng = file.gpsMarker?.getLatLng();
+        if (!markerLatLng) {
+          return;
+        }
+        latitudeInput.value = markerLatLng.lat.toFixed(6);
+        longitudeInput.value = markerLatLng.lng.toFixed(6);
+      });
+    } else {
+      file.gpsMap.invalidateSize();
+      file.gpsMap.setView([lat, lon]);
+      file.gpsMarker?.setLatLng([lat, lon]);
+    }
+  };
+
+  latitudeInput.addEventListener("input", updateMarkerPosition);
+  longitudeInput.addEventListener("input", updateMarkerPosition);
+
+  updateMarkerPosition();
+}
+
+function renderFields(file: LoadedFile, form: HTMLFormElement) {
+  form.innerHTML = "";
+
+  if (!file.parsedFields.length) {
     return;
   }
 
@@ -197,7 +1261,7 @@ function renderFields(fields: EXIFField[]) {
   function findCorrespondingDate(timeField: EXIFField): string | null {
     if (timeField.ifd === "GPS" && timeField.name === "GPSTimeStamp") {
       // For GPS time, look for GPS date stamp
-      const gpsDateField = fields.find(
+      const gpsDateField = file.parsedFields.find(
         (f) => f.name === "GPSDateStamp" && f.ifd === "GPS"
       );
       if (gpsDateField && typeof gpsDateField.value === "string") {
@@ -207,7 +1271,7 @@ function renderFields(fields: EXIFField[]) {
 
     // For other time fields, try to find a corresponding datetime field
     // Look for fields in the same IFD first, then fall back to any datetime field
-    const sameIFDDateTime = fields.find(
+    const sameIFDDateTime = file.parsedFields.find(
       (f) => f.type === "datetime" && f.ifd === timeField.ifd
     );
     if (sameIFDDateTime && typeof sameIFDDateTime.value === "string") {
@@ -215,7 +1279,7 @@ function renderFields(fields: EXIFField[]) {
     }
 
     // Fall back to any datetime field
-    const anyDateTime = fields.find((f) => f.type === "datetime");
+    const anyDateTime = file.parsedFields.find((f) => f.type === "datetime");
     if (anyDateTime && typeof anyDateTime.value === "string") {
       return anyDateTime.value;
     }
@@ -223,20 +1287,26 @@ function renderFields(fields: EXIFField[]) {
     return null;
   }
 
-  fields.forEach((f: EXIFField, idx: number) => {
+  file.parsedFields.forEach((f: EXIFField, idx: number) => {
     const row = document.createElement("div");
 
     row.className = "row";
 
     const label = document.createElement("label");
+    const labelId = `field-label-${idx}`;
 
+    label.id = labelId;
     label.textContent = f.label;
 
-    let input;
+    let control: HTMLElement;
 
     if (f.type === "date") {
-      input = document.createElement("input");
+      const input = document.createElement("input");
       input.type = "date";
+      input.dataset.fieldInput = "true";
+      input.dataset.idx = idx.toString();
+      input.id = `field-${idx}`;
+      label.htmlFor = input.id;
       const inputDateValue = toInputDate(f.value as string);
 
       let localDateValue = "";
@@ -258,9 +1328,15 @@ function renderFields(fields: EXIFField[]) {
       }
 
       input.value = localDateValue;
+      control = input;
     } else if (f.type === "time") {
-      input = document.createElement("input");
+      const input = document.createElement("input");
       input.type = "time";
+      input.step = "1";
+      input.dataset.fieldInput = "true";
+      input.dataset.idx = idx.toString();
+      input.id = `field-${idx}`;
+      label.htmlFor = input.id;
 
       // Convert EXIF time (UTC) to local time before setting input value
       const utcTime = toInputTime(f.value as number[]);
@@ -325,18 +1401,114 @@ function renderFields(fields: EXIFField[]) {
       }
 
       input.value = localTime;
+      control = input;
+    } else if (f.type === "coordinate" || f.type === "number") {
+      const input = document.createElement("input");
+      input.type = "number";
+      input.step = f.type === "coordinate" ? "0.000001" : "0.1";
+      input.dataset.fieldInput = "true";
+      input.dataset.idx = idx.toString();
+      input.id = `field-${idx}`;
+      label.htmlFor = input.id;
+      input.value =
+        typeof f.value === "number"
+          ? f.type === "coordinate"
+            ? f.value.toFixed(6)
+            : f.value.toFixed(1)
+          : "";
+      control = input;
     } else {
-      input = document.createElement("input");
-      input.type = "datetime-local";
-      input.step = "1";
-      input.value = toInputDateTime(f.value as string);
+      label.htmlFor = `field-${idx}`;
+      control = createDateTimePicker(
+        idx,
+        labelId,
+        toInputDateTime(f.value as string)
+      );
     }
 
-    input.dataset.idx = idx.toString();
     row.appendChild(label);
-    row.appendChild(input);
-    fieldsForm.appendChild(row);
+    row.appendChild(control);
+    form.appendChild(row);
   });
+
+  setupGpsEditor(file);
+}
+
+function appendFileEditor(file: LoadedFile) {
+  const container = document.createElement("div");
+  const meta = document.createElement("div");
+  const previewPanel = document.createElement("div");
+  const previewButton = document.createElement("button");
+  const previewImg = document.createElement("img");
+  const previewInfo = document.createElement("div");
+  const previewName = document.createElement("div");
+  const previewHint = document.createElement("div");
+  const editorPanel = document.createElement("div");
+  const form = document.createElement("form");
+  const gpsEditorEl = document.createElement("div");
+  const gpsMapElement = document.createElement("div");
+  const gpsHintEl = document.createElement("div");
+  const actions = document.createElement("div");
+  const downloadButton = document.createElement("button");
+  const clearButton = document.createElement("button");
+
+  container.className = "file-editor";
+  meta.className = "meta";
+  previewPanel.className = "preview-panel";
+  previewButton.className = "preview-button";
+  previewButton.type = "button";
+  previewButton.setAttribute("aria-label", `Open larger image preview for ${file.filename}`);
+  previewImg.className = "preview";
+  previewImg.alt = file.filename;
+  previewImg.src = file.previewUrl;
+  previewInfo.id = "";
+  previewInfo.className = "muted";
+  previewName.textContent = file.filename;
+  previewHint.textContent = "Click image to enlarge";
+  editorPanel.className = "editor-panel";
+  form.className = "file-fields";
+  gpsEditorEl.className = "gps-editor";
+  gpsEditorEl.style.display = "none";
+  gpsMapElement.className = "gps-map";
+  gpsHintEl.className = "muted";
+  actions.className = "file-card-actions";
+  downloadButton.type = "button";
+  downloadButton.className = "primary";
+  downloadButton.textContent = "Download";
+  clearButton.type = "button";
+  clearButton.className = "ghost";
+  clearButton.textContent = "Clear";
+
+  previewButton.addEventListener("click", () => openImageModal(file.previewUrl));
+  downloadButton.addEventListener("click", () => downloadLoadedFile(file.id));
+  clearButton.addEventListener("click", () => removeLoadedFile(file.id));
+
+  previewButton.appendChild(previewImg);
+  previewInfo.appendChild(previewName);
+  previewInfo.appendChild(previewHint);
+  previewPanel.appendChild(previewButton);
+  previewPanel.appendChild(previewInfo);
+  gpsEditorEl.appendChild(gpsMapElement);
+  gpsEditorEl.appendChild(gpsHintEl);
+  editorPanel.appendChild(form);
+  editorPanel.appendChild(gpsEditorEl);
+  actions.appendChild(downloadButton);
+  actions.appendChild(clearButton);
+  meta.appendChild(previewPanel);
+  meta.appendChild(editorPanel);
+  container.appendChild(meta);
+  container.appendChild(actions);
+  fileListEl.appendChild(container);
+
+  file.elements = {
+    container,
+    form,
+    gpsEditor: gpsEditorEl,
+    gpsMapEl: gpsMapElement,
+    gpsHint: gpsHintEl,
+  };
+
+  renderFields(file, form);
 }
 
 // convert EXIF "YYYY:MM:DD HH:MM:SS" to input datetime-local value "YYYY-MM-DDTHH:MM:SS"
@@ -430,14 +1602,18 @@ function fromInputTime(val: string): number[] {
   return parts;
 }
 
-function downloadModified(filename: string) {
-  if (!workingBuffer) {
+function applyFormToWorkingBuffer(file: LoadedFile) {
+  if (!file.elements) {
     return;
   }
 
-  const inputs = fieldsForm.querySelectorAll("input");
+  const inputs = file.elements.form.querySelectorAll(
+    '[data-field-input="true"]'
+  ) as NodeListOf<HTMLInputElement>;
 
-  const dv = new DataView(workingBuffer);
+  const parsedFields = file.parsedFields;
+  const dv = new DataView(file.workingBuffer);
+  const littleEndian = getExifLittleEndian(dv);
 
   inputs.forEach((inp: HTMLInputElement) => {
     const idx = Number(inp.dataset.idx);
@@ -505,17 +1681,69 @@ function downloadModified(filename: string) {
           }
         }
       }
+    } else if (field.type === "coordinate") {
+      const decimal = Number(inp.value);
+      if (Number.isNaN(decimal)) {
+        return;
+      }
+
+      const ref =
+        field.name === "GPSLatitude"
+          ? decimal >= 0
+            ? "N"
+            : "S"
+          : decimal >= 0
+            ? "E"
+            : "W";
+      const [degrees, minutes, seconds] = dmsFromDecimal(decimal);
+      const secondsScaled = Math.round(seconds * 1000000);
+
+      if (field._gpsRefOffset && field._gpsRefCount) {
+        dv.setUint8(field._gpsRefOffset, ref.charCodeAt(0));
+        if (field._gpsRefCount > 1) {
+          dv.setUint8(field._gpsRefOffset + 1, 0);
+        }
+      }
+
+      const abs = field.valueOffset;
+      dv.setUint32(abs, degrees, littleEndian);
+      dv.setUint32(abs + 4, 1, littleEndian);
+      dv.setUint32(abs + 8, minutes, littleEndian);
+      dv.setUint32(abs + 12, 1, littleEndian);
+      dv.setUint32(abs + 16, secondsScaled, littleEndian);
+      dv.setUint32(abs + 20, 1000000, littleEndian);
+      return;
+    } else if (field.type === "number") {
+      const value = Number(inp.value);
+      if (Number.isNaN(value)) {
+        return;
+      }
+
+      const abs = field.valueOffset;
+      const scaled = Math.round(Math.abs(value) * 100);
+      dv.setUint32(abs, scaled, littleEndian);
+      dv.setUint32(abs + 4, 100, littleEndian);
+      if (field._gpsAltitudeRefOffset !== undefined) {
+        dv.setUint8(field._gpsAltitudeRefOffset, value < 0 ? 1 : 0);
+      }
+      return;
     } else {
       // Use the original fromInputDateTime function
       newVal = fromInputDateTime(inp.value);
-      
+
       // For combined GPS datetime, convert to UTC and split into date and time
-      if (field.ifd === "GPS" && field.name === "GPSDateTime" && typeof newVal === "string") {
+      if (
+        field.ifd === "GPS" &&
+        field.name === "GPSDateTime" &&
+        typeof newVal === "string"
+      ) {
         // Parse the local datetime string "YYYY:MM:DD HH:MM:SS"
-        const match = newVal.match(/(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+        const match = newVal.match(
+          /(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/
+        );
         if (match) {
           const [_, y, m, d, hh, mm, ss] = match;
-          
+
           // Create local date object
           const localDate = new Date(
             parseInt(y),
@@ -525,17 +1753,23 @@ function downloadModified(filename: string) {
             parseInt(mm),
             parseInt(ss)
           );
-          
+
           // Convert to UTC
           const utcYear = localDate.getUTCFullYear();
-          const utcMonth = (localDate.getUTCMonth() + 1).toString().padStart(2, "0");
+          const utcMonth = (localDate.getUTCMonth() + 1)
+            .toString()
+            .padStart(2, "0");
           const utcDay = localDate.getUTCDate().toString().padStart(2, "0");
           const utcHours = localDate.getUTCHours();
           const utcMinutes = localDate.getUTCMinutes();
           const utcSeconds = localDate.getUTCSeconds();
-          
+
           // Write the GPS date stamp
-          if (field._gpsDateTag && field._gpsDateOffset && field._gpsDateCount) {
+          if (
+            field._gpsDateTag &&
+            field._gpsDateOffset &&
+            field._gpsDateCount
+          ) {
             const dateStr = `${utcYear}:${utcMonth}:${utcDay}`;
             const dateBytes = new Uint8Array(field._gpsDateCount);
             const encoder = new TextEncoder();
@@ -543,12 +1777,12 @@ function downloadModified(filename: string) {
             const len = Math.min(encoded.length, field._gpsDateCount - 1);
             dateBytes.set(encoded.subarray(0, len), 0);
             dateBytes[len] = 0; // null terminate
-            
+
             for (let i = 0; i < field._gpsDateCount; i++) {
               dv.setUint8(field._gpsDateOffset + i, dateBytes[i]);
             }
           }
-          
+
           // Update newVal to be the time array for the GPS timestamp
           newVal = [utcHours, utcMinutes, utcSeconds];
         }
@@ -564,7 +1798,8 @@ function downloadModified(filename: string) {
     const count = field.count;
 
     let bytes =
-      field.type === "time" || (field.type === "datetime" && field.name === "GPSDateTime")
+      field.type === "time" ||
+      (field.type === "datetime" && field.name === "GPSDateTime")
         ? new Uint32Array(count * 2)
         : new Uint8Array(count);
 
@@ -599,23 +1834,12 @@ function downloadModified(filename: string) {
       for (let i = 0; i < count; i++) {
         const abs = field.valueOffset + 8 * i;
 
-        dv.setUint32(abs, target[i]);
-        dv.setUint32(abs + 4, 1);
+        dv.setUint32(abs, target[i], littleEndian);
+        dv.setUint32(abs + 4, 1, littleEndian);
       }
     }
   });
 
-  // create blob and trigger download
-  const blob = new Blob([workingBuffer], { type: "image/jpeg" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename || "";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-  status.textContent = "Download ready - modified image saved.";
 }
 
 // ---------- EXIF parsing (custom, minimal, only to find & edit ASCII date/time tags) ----------
@@ -772,6 +1996,20 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
           valueOffset: valueOffsetAbsolute,
           value,
         });
+      } else if (type === 1) {
+        valueOffsetAbsolute = valueOrOffset;
+        const values: number[] = [];
+        for (let k = 0; k < count; k++) {
+          values.push(view.getUint8(valueOffsetAbsolute + k));
+        }
+
+        entries.set(tag, {
+          tag,
+          type,
+          count,
+          valueOffset: valueOffsetAbsolute,
+          value: count === 1 ? values[0] : values,
+        });
       } else {
         // store meta for non-ascii
         if (type === 4 || type === 3) {
@@ -817,14 +2055,25 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
   // read 0th IFD
   const ifd0 = readIFD(firstIFDOffset);
 
-  // check DateTime in 0th
-  if (ifd0.entries.get(TAGS.DateTime)) {
-    const entry = ifd0.entries.get(TAGS.DateTime)!;
+  const ifd0DateTags = [
+    {
+      tag: TAGS.ModifyDate,
+      name: "ModifyDate",
+      label: "ModifyDate (Image DateTime, 0th IFD)",
+    },
+  ];
+
+  for (const fieldDef of ifd0DateTags) {
+    const entry = ifd0.entries.get(fieldDef.tag);
+    if (!entry) {
+      continue;
+    }
+
     results.push({
-      label: "Image DateTime (0th IFD)",
-      name: "DateTime",
+      label: fieldDef.label,
+      name: fieldDef.name,
       ifd: "0th",
-      tag: TAGS.DateTime,
+      tag: fieldDef.tag,
       count: entry.count,
       valueOffset: entry.valueOffset,
       value: entry.value,
@@ -849,26 +2098,30 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
 
   if (exifIFDOffset) {
     const exifIFD = readIFD(exifIFDOffset);
-    if (exifIFD.entries.get(TAGS.DateTimeOriginal)) {
-      const entry = exifIFD.entries.get(TAGS.DateTimeOriginal)!;
-      results.push({
-        label: "DateTimeOriginal (Exif IFD)",
-        name: "DateTimeOriginal",
-        ifd: "Exif",
+    const exifDateTags = [
+      {
         tag: TAGS.DateTimeOriginal,
-        count: entry.count,
-        valueOffset: entry.valueOffset,
-        value: entry.value,
-        type: "datetime",
-      });
-    }
-    if (exifIFD.entries.get(TAGS.DateTimeDigitized)) {
-      const entry = exifIFD.entries.get(TAGS.DateTimeDigitized)!;
+        name: "DateTimeOriginal",
+        label: "DateTimeOriginal (Exif IFD)",
+      },
+      {
+        tag: TAGS.CreateDate,
+        name: "CreateDate",
+        label: "CreateDate (DateTimeDigitized, Exif IFD)",
+      },
+    ];
+
+    for (const fieldDef of exifDateTags) {
+      const entry = exifIFD.entries.get(fieldDef.tag);
+      if (!entry) {
+        continue;
+      }
+
       results.push({
-        label: "DateTimeDigitized (Exif IFD)",
-        name: "DateTimeDigitized",
+        label: fieldDef.label,
+        name: fieldDef.name,
         ifd: "Exif",
-        tag: TAGS.DateTimeDigitized,
+        tag: fieldDef.tag,
         count: entry.count,
         valueOffset: entry.valueOffset,
         value: entry.value,
@@ -879,20 +2132,94 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
 
   if (gpsIFDOffset) {
     const gpsIFD = readIFD(gpsIFDOffset);
+    const gpsLatitudeRef = gpsIFD.entries.get(TAGS.GPSLatitudeRef);
+    const gpsLatitude = gpsIFD.entries.get(TAGS.GPSLatitude);
+    const gpsLongitudeRef = gpsIFD.entries.get(TAGS.GPSLongitudeRef);
+    const gpsLongitude = gpsIFD.entries.get(TAGS.GPSLongitude);
+    const gpsAltitudeRef = gpsIFD.entries.get(TAGS.GPSAltitudeRef);
+    const gpsAltitude = gpsIFD.entries.get(TAGS.GPSAltitude);
     const gpsDateEntry = gpsIFD.entries.get(TAGS.GPSDateStamp);
     const gpsTimeEntry = gpsIFD.entries.get(TAGS.GPSTimeStamp);
+
+    if (
+      gpsLatitudeRef &&
+      gpsLatitude &&
+      typeof gpsLatitudeRef.value === "string" &&
+      Array.isArray(gpsLatitude.value)
+    ) {
+      const latitude = decimalFromDms(
+        gpsLatitude.value as number[],
+        gpsLatitudeRef.value as string
+      );
+      if (latitude !== null) {
+        results.push({
+          label: "GPS Latitude",
+          name: "GPSLatitude",
+          ifd: "GPS",
+          tag: TAGS.GPSLatitude,
+          count: gpsLatitude.count,
+          valueOffset: gpsLatitude.valueOffset,
+          value: latitude,
+          type: "coordinate",
+          _gpsRefOffset: gpsLatitudeRef.valueOffset,
+          _gpsRefCount: gpsLatitudeRef.count,
+        });
+      }
+    }
+
+    if (
+      gpsLongitudeRef &&
+      gpsLongitude &&
+      typeof gpsLongitudeRef.value === "string" &&
+      Array.isArray(gpsLongitude.value)
+    ) {
+      const longitude = decimalFromDms(
+        gpsLongitude.value as number[],
+        gpsLongitudeRef.value as string
+      );
+      if (longitude !== null) {
+        results.push({
+          label: "GPS Longitude",
+          name: "GPSLongitude",
+          ifd: "GPS",
+          tag: TAGS.GPSLongitude,
+          count: gpsLongitude.count,
+          valueOffset: gpsLongitude.valueOffset,
+          value: longitude,
+          type: "coordinate",
+          _gpsRefOffset: gpsLongitudeRef.valueOffset,
+          _gpsRefCount: gpsLongitudeRef.count,
+        });
+      }
+    }
+
+    if (gpsAltitude && typeof gpsAltitude.value === "number") {
+      const altitudeValue =
+        (gpsAltitude.value as number) * (gpsAltitudeRef?.value === 1 ? -1 : 1);
+      results.push({
+        label: "GPS Altitude (m)",
+        name: "GPSAltitude",
+        ifd: "GPS",
+        tag: TAGS.GPSAltitude,
+        count: gpsAltitude.count,
+        valueOffset: gpsAltitude.valueOffset,
+        value: altitudeValue,
+        type: "number",
+        _gpsAltitudeRefOffset: gpsAltitudeRef?.valueOffset,
+      });
+    }
 
     // Combine GPS date and time into a single datetime field for easier editing
     if (gpsDateEntry && gpsTimeEntry) {
       const dateStr = gpsDateEntry.value as string; // "YYYY:MM:DD"
       const timeArr = gpsTimeEntry.value as number[]; // [H, M, S] in UTC
-      
+
       // Parse the date components
       const dateMatch = dateStr.match(/(\d{4}):(\d{2}):(\d{2})/);
       if (dateMatch && Array.isArray(timeArr) && timeArr.length === 3) {
         const [_, year, month, day] = dateMatch;
         const [h, m, s] = timeArr;
-        
+
         // Create UTC datetime
         const utcDate = new Date(
           Date.UTC(
@@ -904,7 +2231,7 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
             s || 0
           )
         );
-        
+
         // Convert to local datetime string
         const localYear = utcDate.getFullYear();
         const localMonth = (utcDate.getMonth() + 1).toString().padStart(2, "0");
@@ -912,9 +2239,9 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
         const localHours = utcDate.getHours().toString().padStart(2, "0");
         const localMinutes = utcDate.getMinutes().toString().padStart(2, "0");
         const localSeconds = utcDate.getSeconds().toString().padStart(2, "0");
-        
+
         const localDateTimeStr = `${localYear}:${localMonth}:${localDay} ${localHours}:${localMinutes}:${localSeconds}`;
-        
+
         results.push({
           label: "GPS DateTime (GPS IFD)",
           name: "GPSDateTime",

@@ -10,75 +10,52 @@
   <body>
     <div class="card">
       <h2>EXIF Date Editor</h2>
-      <p class="muted">
-        This page edits existing EXIF date/time fields in-place
-
+      <div class="intro">
         <p class="muted">
-          It looks for Image DateTime, DateTimeOriginal, DateTimeDigitized,
-          GPSDateStamp, and GPSTimeStamp if present.
+          Edit EXIF date fields in a JPEG, directly in your browser.
         </p>
-
         <p class="muted">
-          And reconstructs the EXIF data back into a new JPEG file.
+          Supports ModifyDate, DateTimeOriginal, CreateDate, GPSDateStamp,
+          and GPSTimeStamp when present.
         </p>
-
-        <ul class="muted list">
-          <li>no server</li>
-          <li>no uploads</li>
-          <li>no external libraries</li>
-          <li>no internet required</li>
-          <li>just HTML and JavaScript</li>
-        </ul>
-
-      </p>
+        <div class="intro-points muted" aria-label="Key details">
+          <span class="intro-pill">Local EXIF edits</span>
+          <span class="intro-pill">No uploads</span>
+          <span class="intro-pill">Map tiles may need internet</span>
+        </div>
+      </div>
 
       <div id="uploader" class="upload" tabindex="0">
-        <div id="up-text">
-          Drag & drop a JPEG here, or click to select a file
-        </div>
-        <div class="muted">Only one file at a time. JPEG only.</div>
+        <div id="up-text">Drag and drop a JPEG, or click to choose one</div>
+        <div class="muted">Add one or more JPEGs. New drops append to the list.</div>
         <input
           id="fileInput"
           type="file"
           accept="image/jpeg"
+          multiple
           style="display: none"
         />
       </div>
 
-      <div style="height: 14px"></div>
+      <div class="section-spacer" aria-hidden="true"></div>
 
-      <div id="main" class="meta" style="display: none">
-        <div
-          style="
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 8px;
-          "
-        >
-          <img id="preview" class="preview" alt="preview" />
-          <div id="preview-info" class="muted">
-            <div id="preview-info-text"></div>
-          </div>
-          <div id="filename" class="muted"></div>
-        </div>
-        <form id="fields"></form>
-      </div>
+      <div id="fileList" class="file-list"></div>
 
-      <div
-        class="actions"
-        style="
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-        "
-      >
-        <div id="status" class="muted">No file loaded</div>
-        <div>
-          <button id="clearBtn" class="ghost" disabled>Clear</button>
-          <button id="downloadBtn" class="primary" disabled>Download</button>
-        </div>
+      <div class="actions">
+        <div id="status" class="muted">No files loaded</div>
       </div>
+    </div>
+
+    <div
+      id="imageModal"
+      class="image-modal"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-label="Image preview"
+    >
+      <div id="imageModalBackdrop" class="image-modal-backdrop"></div>
+      <img id="modalPreview" class="modal-preview" alt="Large preview" />
     </div>
   </body>
 </html>
