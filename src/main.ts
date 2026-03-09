@@ -735,6 +735,25 @@ function decimalFromDms(parts: number[], ref: string) {
   return ref === "S" || ref === "W" ? -decimal : decimal;
 }
 
+function decodeGpsRef(value: string | number | number[] | undefined) {
+  if (typeof value === "string") {
+    return value.trim().charAt(0).toUpperCase() || null;
+  }
+
+  if (typeof value === "number") {
+    return value > 0 ? String.fromCharCode(value).toUpperCase() : null;
+  }
+
+  if (Array.isArray(value)) {
+    const first = value.find((entry) => entry > 0);
+    return typeof first === "number"
+      ? String.fromCharCode(first).toUpperCase()
+      : null;
+  }
+
+  return null;
+}
+
 function dmsFromDecimal(decimal: number) {
   const absolute = Math.abs(decimal);
   const degrees = Math.floor(absolute);
@@ -2591,17 +2610,23 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
     const gpsAltitude = gpsIFD.entries.get(TAGS.GPSAltitude);
     const gpsDateEntry = gpsIFD.entries.get(TAGS.GPSDateStamp);
     const gpsTimeEntry = gpsIFD.entries.get(TAGS.GPSTimeStamp);
+    const latitudeRef = decodeGpsRef(gpsLatitudeRef?.value as
+      | string
+      | number
+      | number[]
+      | undefined);
+    const longitudeRef = decodeGpsRef(gpsLongitudeRef?.value as
+      | string
+      | number
+      | number[]
+      | undefined);
 
     if (
-      gpsLatitudeRef &&
+      latitudeRef &&
       gpsLatitude &&
-      typeof gpsLatitudeRef.value === "string" &&
       Array.isArray(gpsLatitude.value)
     ) {
-      const latitude = decimalFromDms(
-        gpsLatitude.value as number[],
-        gpsLatitudeRef.value as string
-      );
+      const latitude = decimalFromDms(gpsLatitude.value as number[], latitudeRef);
       if (latitude !== null) {
         results.push({
           label: "GPS Latitude",
@@ -2612,21 +2637,20 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
           valueOffset: gpsLatitude.valueOffset,
           value: latitude,
           type: "coordinate",
-          _gpsRefOffset: gpsLatitudeRef.valueOffset,
-          _gpsRefCount: gpsLatitudeRef.count,
+          _gpsRefOffset: gpsLatitudeRef?.valueOffset,
+          _gpsRefCount: gpsLatitudeRef?.count,
         });
       }
     }
 
     if (
-      gpsLongitudeRef &&
+      longitudeRef &&
       gpsLongitude &&
-      typeof gpsLongitudeRef.value === "string" &&
       Array.isArray(gpsLongitude.value)
     ) {
       const longitude = decimalFromDms(
         gpsLongitude.value as number[],
-        gpsLongitudeRef.value as string
+        longitudeRef
       );
       if (longitude !== null) {
         results.push({
@@ -2638,8 +2662,8 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
           valueOffset: gpsLongitude.valueOffset,
           value: longitude,
           type: "coordinate",
-          _gpsRefOffset: gpsLongitudeRef.valueOffset,
-          _gpsRefCount: gpsLongitudeRef.count,
+          _gpsRefOffset: gpsLongitudeRef?.valueOffset,
+          _gpsRefCount: gpsLongitudeRef?.count,
         });
       }
     }

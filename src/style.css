@@ -150,6 +150,7 @@ img.preview {
   flex-direction: column;
   gap: 8px;
   padding-top: 10px;
+  flex: 0 0 34px;
 }
 .preview-panel {
   display: flex;
@@ -633,17 +634,21 @@ body.modal-open {
   }
 
   .preview-panel {
-    width: 100%;
-    flex-basis: auto;
+    width: 160px;
+    flex: 0 1 160px;
+    max-width: calc(100vw - 120px);
   }
 
   .preview-column {
+    display: flex;
+    justify-content: center;
     width: 100%;
     flex-basis: auto;
   }
 
   .preview-frame {
-    width: 100%;
+    width: auto;
+    max-width: 100%;
     justify-content: center;
   }
 
