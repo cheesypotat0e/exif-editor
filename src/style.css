@@ -80,6 +80,11 @@ h2 {
 .section-spacer {
   height: 18px;
 }
+.toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 18px;
+}
 .file-list {
   display: flex;
   flex-direction: column;
@@ -97,6 +102,7 @@ h2 {
 }
 .file-card-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   justify-content: flex-end;
@@ -130,6 +136,21 @@ img.preview {
   gap: 18px;
   min-width: 0;
 }
+.preview-column {
+  width: 196px;
+  flex: 0 0 196px;
+}
+.preview-frame {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.reorder-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+}
 .preview-panel {
   display: flex;
   flex-direction: column;
@@ -143,6 +164,50 @@ img.preview {
   flex-direction: column;
   gap: 2px;
   text-align: center;
+}
+.preview-name-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+}
+.preview-filename {
+  font-weight: 600;
+  color: #111827;
+  word-break: break-word;
+}
+.preview-name-input {
+  font-family: var(--input-font-family);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  width: 100%;
+  min-width: 0;
+}
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  background: #fff;
+  color: #334155;
+}
+.icon-button svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+.icon-button:hover:not(:disabled) {
+  background: #f8fafc;
+}
+.icon-button:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
 form#fields,
 .file-fields {
@@ -193,6 +258,10 @@ input[type="number"] {
   box-sizing: border-box;
   background: #fff;
   color: #111;
+}
+input.preview-name-input {
+  min-width: 0;
+  width: 100%;
 }
 .datetime-picker {
   position: relative;
@@ -307,6 +376,12 @@ input[type="number"] {
   height: 16px;
   fill: currentColor;
 }
+.datetime-picker-popup button,
+.datetime-picker-popup input,
+.datetime-picker-popup select,
+.datetime-picker-toggle {
+  touch-action: manipulation;
+}
 .datetime-picker input.datetime-picker-segment::selection {
   background: #bfdbfe;
   color: #111827;
@@ -323,16 +398,18 @@ input[type="time"]:focus-visible {
   background: #e2e8f0;
 }
 .datetime-picker-popup {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
+  position: fixed;
   z-index: 20;
-  width: min(320px, 100%);
+  width: 320px;
   border: 1px solid #dbe2ea;
   border-radius: 14px;
   background: #fff;
   box-shadow: 0 18px 40px rgba(15, 23, 42, 0.14);
   padding: 12px;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .datetime-picker.is-open .datetime-picker-field {
   border-color: #cbd5e1;
@@ -345,6 +422,9 @@ input[type="time"]:focus-visible {
   margin-bottom: 10px;
 }
 .datetime-picker-nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 8px 0;
   border-radius: 10px;
   background: #f8fafc;
@@ -394,59 +474,83 @@ input[type="time"]:focus-visible {
   outline-offset: 1px;
 }
 .datetime-picker-time {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid #eef2f7;
 }
 .datetime-picker-time-label {
+  margin: 0;
   color: #475569;
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  line-height: 1;
 }
 .datetime-picker-time-fields {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  margin-left: auto;
+  gap: 4px;
+  justify-self: end;
+  width: max-content;
+  min-width: 0;
 }
-.datetime-picker-time-input {
+input.datetime-picker-time-input {
   font-family: var(--input-font-family);
   font-size: var(--input-font-size);
   font-variant-numeric: tabular-nums;
-  width: 54px;
-  padding: 8px 6px;
+  width: 4.8ch;
+  min-width: 0;
+  padding: 7px 0.2ch;
   border-radius: 8px;
   border: 1px solid #d1d5db;
   text-align: center;
   font-weight: 600;
+  flex: 0 0 4.8ch;
+  max-width: 4.8ch;
+  line-height: 1;
+  box-sizing: border-box;
+  appearance: textfield;
+  -moz-appearance: textfield;
 }
-.datetime-picker-time-input:focus-visible {
+input.datetime-picker-time-input:focus-visible {
   outline: 2px solid #2563eb;
   outline-offset: 1px;
   border-color: #2563eb;
 }
+input.datetime-picker-time-input::-webkit-inner-spin-button,
+input.datetime-picker-time-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
 .datetime-picker-time-separator {
   color: #64748b;
   font-weight: 700;
+  line-height: 1;
 }
-.datetime-picker-meridiem {
+select.datetime-picker-meridiem {
   font-family: var(--input-font-family);
   font-size: var(--input-font-size);
   font-variant-numeric: tabular-nums;
-  padding: 8px 10px;
+  flex: 0 0 5.4ch;
+  width: 5.4ch;
+  min-width: 0;
+  max-width: 5.4ch;
+  padding: 7px 0.3ch;
   border-radius: 8px;
   border: 1px solid #d1d5db;
   background: #fff;
   color: #111;
   font-weight: 600;
+  line-height: 1;
+  box-sizing: border-box;
+  align-self: center;
 }
-.datetime-picker-meridiem:focus-visible {
+select.datetime-picker-meridiem:focus-visible {
   outline: 2px solid #2563eb;
   outline-offset: 1px;
   border-color: #2563eb;
@@ -472,6 +576,10 @@ button.primary {
 button.ghost {
   background: #eef2ff;
   color: #3730a3;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 .muted {
   color: #6b7280;
@@ -529,15 +637,31 @@ body.modal-open {
     flex-basis: auto;
   }
 
+  .preview-column {
+    width: 100%;
+    flex-basis: auto;
+  }
+
+  .preview-frame {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .reorder-rail {
+    padding-top: 0;
+  }
+
+  .toolbar {
+    justify-content: stretch;
+  }
+
+  .toolbar button {
+    width: 100%;
+  }
+
   .row {
     grid-template-columns: 1fr;
     row-gap: 10px;
-  }
-
-  .datetime-picker-popup {
-    width: min(320px, calc(100vw - 56px));
-    max-width: calc(100vw - 56px);
-    left: 0;
   }
 
   .datetime-picker-field {
@@ -569,17 +693,27 @@ body.modal-open {
   }
 
   .datetime-picker-time {
+    display: flex;
     flex-wrap: wrap;
     align-items: flex-start;
+    gap: 6px;
+  }
+
+  .datetime-picker-time-label {
+    line-height: 1.2;
+    flex: 1 0 100%;
   }
 
   .datetime-picker-time-fields {
-    margin-left: 0;
+    display: flex;
+    justify-self: auto;
     gap: 4px;
   }
 
-  .datetime-picker-time-input {
-    width: 48px;
+  input.datetime-picker-time-input {
+    width: 4.8ch;
+    flex-basis: 4.8ch;
+    max-width: 4.8ch;
   }
 
   .actions {

@@ -57,6 +57,7 @@ type DateTimePickerState = {
 type LoadedFile = {
   id: string;
   filename: string;
+  originalFilename: string;
   workingBuffer: ArrayBuffer;
   parsedFields: EXIFField[];
   previewUrl: string;
@@ -68,6 +69,13 @@ type LoadedFile = {
     gpsEditor: HTMLDivElement;
     gpsMapEl: HTMLDivElement;
     gpsHint: HTMLDivElement;
+    filenameInput: HTMLInputElement;
+    filenameLabel: HTMLSpanElement;
+    editFilenameButton: HTMLButtonElement;
+    previewButton: HTMLButtonElement;
+    previewImg: HTMLImageElement;
+    moveUpButton: HTMLButtonElement;
+    moveDownButton: HTMLButtonElement;
   };
 };
 
@@ -134,6 +142,9 @@ const imageModalBackdrop = document.getElementById(
 const modalPreview = document.getElementById("modalPreview") as HTMLImageElement;
 const fileListEl = document.getElementById("fileList") as HTMLDivElement;
 const status = document.getElementById("status") as HTMLDivElement;
+const downloadAllButton = document.getElementById(
+  "downloadAllButton"
+) as HTMLButtonElement;
 
 // drag/drop
 uploader.addEventListener("click", () => fileInput.click());
@@ -167,6 +178,9 @@ uploader.addEventListener("mouseleave", () => {
 });
 
 fileInput.addEventListener("change", () => handleFileList(fileInput.files));
+downloadAllButton.addEventListener("click", () => {
+  void downloadAllLoadedFiles();
+});
 
 imageModalBackdrop.addEventListener("click", closeImageModal);
 document.addEventListener("keydown", (event) => {
@@ -190,6 +204,293 @@ document.addEventListener("keydown", (event) => {
     closeDateTimePicker(true);
   }
 });
+window.addEventListener("resize", () => {
+  if (activeDateTimePicker) {
+    positionDateTimePickerPopup(activeDateTimePicker);
+  }
+});
+window.addEventListener(
+  "scroll",
+  () => {
+    if (activeDateTimePicker) {
+      positionDateTimePickerPopup(activeDateTimePicker);
+    }
+  },
+  true
+);
+
+function getFileExtension(name: string) {
+  const match = name.match(/(\.[^.]+)$/);
+  return match ? match[1] : ".jpg";
+}
+
+function sanitizeFilename(name: string, fallbackName: string) {
+  const trimmed = name.trim().replace(/[\\/:*?"<>|]+/g, "-");
+  const fallbackBase = fallbackName.replace(/\.[^.]+$/, "") || "image";
+  const fallbackExtension = getFileExtension(fallbackName);
+
+  if (!trimmed) {
+    return `${fallbackBase}${fallbackExtension}`;
+  }
+
+  if (/\.[^.]+$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  return `${trimmed}${fallbackExtension}`;
+}
+
+function getDownloadFilename(file: LoadedFile) {
+  return sanitizeFilename(file.filename, file.originalFilename);
+}
+
+function getEditedBlob(file: LoadedFile) {
+  applyFormToWorkingBuffer(file);
+  return new Blob([file.workingBuffer], { type: "image/jpeg" });
+}
+
+function triggerBlobDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function getUniqueFilenames(names: string[]) {
+  const seen = new Map<string, number>();
+
+  return names.map((name) => {
+    const normalized = name || "image.jpg";
+    const count = seen.get(normalized) ?? 0;
+    seen.set(normalized, count + 1);
+    if (count === 0) {
+      return normalized;
+    }
+
+    const extension = getFileExtension(normalized);
+    const base = normalized.slice(0, -extension.length) || "image";
+    return `${base} (${count + 1})${extension}`;
+  });
+}
+
+function refreshLoadedFileControls() {
+  loadedFiles.forEach((file, index) => {
+    if (!file.elements) {
+      return;
+    }
+
+    file.elements.moveUpButton.disabled = index === 0;
+    file.elements.moveDownButton.disabled = index === loadedFiles.length - 1;
+  });
+}
+
+function isIOSDevice() {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  const platform = navigator.platform || "";
+  const userAgent = navigator.userAgent || "";
+
+  return (
+    /iPad|iPhone|iPod/.test(userAgent) ||
+    (/Mac/.test(platform) && navigator.maxTouchPoints > 1)
+  );
+}
+
+function canShareFiles(file: LoadedFile) {
+  if (typeof navigator === "undefined" || typeof navigator.share !== "function") {
+    return false;
+  }
+
+  if (typeof File === "undefined") {
+    return false;
+  }
+
+  if (typeof navigator.canShare !== "function") {
+    return true;
+  }
+
+  const shareFile = new File([""], getDownloadFilename(file), {
+    type: "image/jpeg",
+  });
+  return navigator.canShare({ files: [shareFile] });
+}
+
+function moveLoadedFile(fileId: string, direction: -1 | 1) {
+  const fromIndex = loadedFiles.findIndex((file) => file.id === fileId);
+  const toIndex = fromIndex + direction;
+
+  if (fromIndex === -1 || toIndex < 0 || toIndex >= loadedFiles.length) {
+    return;
+  }
+
+  const [file] = loadedFiles.splice(fromIndex, 1);
+  loadedFiles.splice(toIndex, 0, file);
+  loadedFiles.forEach((item) => {
+    if (item.elements) {
+      fileListEl.appendChild(item.elements.container);
+    }
+  });
+  refreshLoadedFileControls();
+  status.textContent = "Updated file order.";
+}
+
+function getZipTimestampParts(date: Date) {
+  const year = Math.max(1980, date.getFullYear());
+  const dosTime =
+    (date.getHours() << 11) |
+    (date.getMinutes() << 5) |
+    Math.floor(date.getSeconds() / 2);
+  const dosDate =
+    ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+
+  return { dosDate, dosTime };
+}
+
+let crcTable: Uint32Array | null = null;
+
+function getCrcTable() {
+  if (crcTable) {
+    return crcTable;
+  }
+
+  crcTable = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let j = 0; j < 8; j++) {
+      c = (c & 1) !== 0 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    crcTable[i] = c >>> 0;
+  }
+  return crcTable;
+}
+
+function crc32(data: Uint8Array) {
+  const table = getCrcTable();
+  let crc = 0xffffffff;
+
+  for (const byte of data) {
+    crc = table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createStoredZip(entries: { name: string; data: Uint8Array }[]) {
+  const encoder = new TextEncoder();
+  const now = getZipTimestampParts(new Date());
+  const localParts: Uint8Array[] = [];
+  const centralParts: Uint8Array[] = [];
+  let offset = 0;
+
+  entries.forEach(({ name, data }) => {
+    const nameBytes = encoder.encode(name);
+    const local = new Uint8Array(30 + nameBytes.length + data.length);
+    const localView = new DataView(local.buffer);
+    const fileCrc = crc32(data);
+
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(6, 0x0800, true);
+    localView.setUint16(8, 0, true);
+    localView.setUint16(10, now.dosTime, true);
+    localView.setUint16(12, now.dosDate, true);
+    localView.setUint32(14, fileCrc, true);
+    localView.setUint32(18, data.length, true);
+    localView.setUint32(22, data.length, true);
+    localView.setUint16(26, nameBytes.length, true);
+    localView.setUint16(28, 0, true);
+    local.set(nameBytes, 30);
+    local.set(data, 30 + nameBytes.length);
+    localParts.push(local);
+
+    const central = new Uint8Array(46 + nameBytes.length);
+    const centralView = new DataView(central.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(8, 0x0800, true);
+    centralView.setUint16(10, 0, true);
+    centralView.setUint16(12, now.dosTime, true);
+    centralView.setUint16(14, now.dosDate, true);
+    centralView.setUint32(16, fileCrc, true);
+    centralView.setUint32(20, data.length, true);
+    centralView.setUint32(24, data.length, true);
+    centralView.setUint16(28, nameBytes.length, true);
+    centralView.setUint16(30, 0, true);
+    centralView.setUint16(32, 0, true);
+    centralView.setUint16(34, 0, true);
+    centralView.setUint16(36, 0, true);
+    centralView.setUint32(38, 0, true);
+    centralView.setUint32(42, offset, true);
+    central.set(nameBytes, 46);
+    centralParts.push(central);
+
+    offset += local.length;
+  });
+
+  const centralOffset = offset;
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const endRecord = new Uint8Array(22);
+  const endView = new DataView(endRecord.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(8, entries.length, true);
+  endView.setUint16(10, entries.length, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, centralOffset, true);
+
+  return new Blob([...localParts, ...centralParts, endRecord], {
+    type: "application/zip",
+  });
+}
+
+async function downloadAllLoadedFiles() {
+  if (!loadedFiles.length) {
+    return;
+  }
+
+  const names = getUniqueFilenames(loadedFiles.map((file) => getDownloadFilename(file)));
+  const entries = await Promise.all(
+    loadedFiles.map(async (file, index) => {
+      const data = new Uint8Array(await getEditedBlob(file).arrayBuffer());
+      return { name: names[index], data };
+    })
+  );
+
+  const archive = createStoredZip(entries);
+  triggerBlobDownload(archive, "exif-edits.zip");
+  status.textContent = `Downloaded ${entries.length} file(s) as ZIP.`;
+}
+
+async function shareLoadedFile(fileId: string) {
+  const file = loadedFiles.find((item) => item.id === fileId);
+  if (!file || !canShareFiles(file)) {
+    return;
+  }
+
+  try {
+    const sharedFile = new File([getEditedBlob(file)], getDownloadFilename(file), {
+      type: "image/jpeg",
+    });
+    await navigator.share({
+      files: [sharedFile],
+      title: getDownloadFilename(file),
+    });
+    status.textContent = `Shared ${getDownloadFilename(file)}.`;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return;
+    }
+
+    console.error(error);
+    status.textContent = "Share failed.";
+  }
+}
 
 async function handleFileList(list: FileList | null) {
   if (!list || list.length === 0) {
@@ -218,6 +519,7 @@ async function handleFileList(list: FileList | null) {
     addedFiles.push({
       id: crypto.randomUUID(),
       filename: file.name,
+      originalFilename: file.name,
       workingBuffer,
       parsedFields: fileFields,
       previewUrl: URL.createObjectURL(file),
@@ -240,10 +542,43 @@ async function handleFileList(list: FileList | null) {
   }
 }
 
+function beginFilenameEdit(file: LoadedFile) {
+  if (!file.elements) {
+    return;
+  }
+
+  file.elements.filenameLabel.hidden = true;
+  file.elements.editFilenameButton.hidden = true;
+  file.elements.filenameInput.hidden = false;
+  file.elements.filenameInput.focus();
+  file.elements.filenameInput.select();
+}
+
+function finishFilenameEdit(file: LoadedFile) {
+  if (!file.elements) {
+    return;
+  }
+
+  file.filename = file.elements.filenameInput.value;
+  const downloadName = getDownloadFilename(file);
+  file.elements.filenameInput.value = file.filename;
+  file.elements.filenameLabel.textContent = downloadName;
+  file.elements.filenameLabel.hidden = false;
+  file.elements.editFilenameButton.hidden = false;
+  file.elements.filenameInput.hidden = true;
+  file.elements.previewImg.alt = downloadName;
+  file.elements.previewButton.setAttribute(
+    "aria-label",
+    `Open larger image preview for ${downloadName}`
+  );
+}
+
 function updateStatus() {
+  downloadAllButton.disabled = loadedFiles.length === 0;
   status.textContent = loadedFiles.length
     ? `${loadedFiles.length} file(s) loaded`
     : "No files loaded";
+  refreshLoadedFileControls();
 }
 
 function removeLoadedFile(fileId: string) {
@@ -272,17 +607,14 @@ function downloadLoadedFile(fileId: string) {
     return;
   }
 
-  applyFormToWorkingBuffer(file);
-  const blob = new Blob([file.workingBuffer], { type: "image/jpeg" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = file.filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-  status.textContent = `Downloaded ${file.filename}.`;
+  if (isIOSDevice() && canShareFiles(file)) {
+    void shareLoadedFile(file.id);
+    return;
+  }
+
+  const filename = getDownloadFilename(file);
+  triggerBlobDownload(getEditedBlob(file), filename);
+  status.textContent = `Downloaded ${filename}.`;
 }
 
 function openImageModal(imageUrl: string) {
@@ -673,6 +1005,10 @@ function renderDateTimePicker(state: DateTimePickerState) {
 
     state.dayGrid.appendChild(dayButton);
   }
+
+  if (activeDateTimePicker === state) {
+    requestAnimationFrame(() => positionDateTimePickerPopup(state));
+  }
 }
 
 function openDateTimePicker(state: DateTimePickerState) {
@@ -686,7 +1022,10 @@ function openDateTimePicker(state: DateTimePickerState) {
   state.monthInput.setAttribute("aria-expanded", "true");
   state.toggleButton.setAttribute("aria-expanded", "true");
   renderDateTimePicker(state);
-  requestAnimationFrame(() => focusSelectedDay(state));
+  requestAnimationFrame(() => {
+    positionDateTimePickerPopup(state);
+    focusSelectedDay(state);
+  });
 }
 
 function closeDateTimePicker(restoreFocus = false) {
@@ -704,6 +1043,36 @@ function closeDateTimePicker(restoreFocus = false) {
   if (restoreFocus) {
     current.monthInput.focus();
   }
+}
+
+function positionDateTimePickerPopup(state: DateTimePickerState) {
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const padding = 12;
+  const preferredWidth = Math.min(320, viewportWidth - padding * 2);
+
+  state.popup.style.width = `${preferredWidth}px`;
+  state.popup.style.maxWidth = `${viewportWidth - padding * 2}px`;
+
+  const rootRect = state.root.getBoundingClientRect();
+  const popupRect = state.popup.getBoundingClientRect();
+  const popupWidth = popupRect.width || preferredWidth;
+  const popupHeight = popupRect.height || 380;
+
+  let left = rootRect.left;
+  if (left + popupWidth > viewportWidth - padding) {
+    left = viewportWidth - popupWidth - padding;
+  }
+  left = Math.max(padding, left);
+
+  let top = rootRect.bottom + 8;
+  if (top + popupHeight > viewportHeight - padding) {
+    top = Math.max(padding, rootRect.top - popupHeight - 8);
+  }
+
+  state.popup.style.left = `${left}px`;
+  state.popup.style.top = `${top}px`;
+  state.popup.style.maxHeight = `${Math.max(220, viewportHeight - top - padding)}px`;
 }
 
 function createDateTimePicker(idx: number, labelId: string, initialValue: string) {
@@ -1114,23 +1483,6 @@ function createDateTimePicker(idx: number, labelId: string, initialValue: string
     }
   });
 
-  root.addEventListener("focusout", (event) => {
-    if (activeDateTimePicker !== state) {
-      return;
-    }
-
-    const nextTarget = event.relatedTarget;
-    if (nextTarget instanceof Node && root.contains(nextTarget)) {
-      return;
-    }
-
-    window.setTimeout(() => {
-      if (activeDateTimePicker === state && !root.contains(document.activeElement)) {
-        closeDateTimePicker();
-      }
-    }, 0);
-  });
-
   root.appendChild(hiddenInput);
   const slash1 = document.createElement("span");
   slash1.className = "datetime-picker-separator";
@@ -1266,6 +1618,29 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
     return;
   }
 
+  const fieldPriority: Record<string, number> = {
+    ModifyDate: 0,
+    DateTimeOriginal: 1,
+    CreateDate: 2,
+    GPSDateTime: 3,
+    GPSLatitude: 4,
+    GPSLongitude: 5,
+    GPSAltitude: 6,
+    GPSDateStamp: 7,
+    GPSTimeStamp: 8,
+  };
+
+  const fieldEntries = file.parsedFields
+    .map((field, idx) => ({ field, idx }))
+    .sort((a, b) => {
+      const aPriority = fieldPriority[a.field.name] ?? 100;
+      const bPriority = fieldPriority[b.field.name] ?? 100;
+      if (aPriority !== bPriority) {
+        return aPriority - bPriority;
+      }
+      return a.idx - b.idx;
+    });
+
   // Helper function to find corresponding date for a time field
   function findCorrespondingDate(timeField: EXIFField): string | null {
     if (timeField.ifd === "GPS" && timeField.name === "GPSTimeStamp") {
@@ -1296,7 +1671,7 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
     return null;
   }
 
-  file.parsedFields.forEach((f: EXIFField, idx: number) => {
+  fieldEntries.forEach(({ field: f, idx }) => {
     const row = document.createElement("div");
 
     row.className = "row";
@@ -1446,12 +1821,20 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
 function appendFileEditor(file: LoadedFile) {
   const container = document.createElement("div");
   const meta = document.createElement("div");
+  const previewColumn = document.createElement("div");
+  const previewFrame = document.createElement("div");
+  const reorderRail = document.createElement("div");
   const previewPanel = document.createElement("div");
   const previewButton = document.createElement("button");
   const previewImg = document.createElement("img");
   const previewInfo = document.createElement("div");
-  const previewName = document.createElement("div");
+  const previewNameRow = document.createElement("div");
+  const filenameLabel = document.createElement("span");
+  const editFilenameButton = document.createElement("button");
+  const filenameInput = document.createElement("input");
   const previewHint = document.createElement("div");
+  const moveUpButton = document.createElement("button");
+  const moveDownButton = document.createElement("button");
   const editorPanel = document.createElement("div");
   const form = document.createElement("form");
   const gpsEditorEl = document.createElement("div");
@@ -1463,6 +1846,9 @@ function appendFileEditor(file: LoadedFile) {
 
   container.className = "file-editor";
   meta.className = "meta";
+  previewColumn.className = "preview-column";
+  previewFrame.className = "preview-frame";
+  reorderRail.className = "reorder-rail";
   previewPanel.className = "preview-panel";
   previewButton.className = "preview-button";
   previewButton.type = "button";
@@ -1472,8 +1858,31 @@ function appendFileEditor(file: LoadedFile) {
   previewImg.src = file.previewUrl;
   previewInfo.id = "";
   previewInfo.className = "muted";
-  previewName.textContent = file.filename;
+  previewNameRow.className = "preview-name-row";
+  filenameLabel.className = "preview-filename";
+  filenameLabel.textContent = getDownloadFilename(file);
+  editFilenameButton.type = "button";
+  editFilenameButton.className = "icon-button";
+  editFilenameButton.setAttribute("aria-label", "Edit filename");
+  editFilenameButton.innerHTML =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25Zm14.71-9.04a1.003 1.003 0 0 0 0-1.42l-2.5-2.5a1.003 1.003 0 0 0-1.42 0l-1.96 1.96 3.75 3.75 2.13-1.79Z"/></svg>';
+  filenameInput.className = "preview-name-input";
+  filenameInput.type = "text";
+  filenameInput.value = file.filename;
+  filenameInput.spellcheck = false;
+  filenameInput.setAttribute("aria-label", "Filename for download");
+  filenameInput.hidden = true;
   previewHint.textContent = "Click image to enlarge";
+  moveUpButton.type = "button";
+  moveUpButton.className = "icon-button";
+  moveUpButton.setAttribute("aria-label", "Move file up");
+  moveUpButton.innerHTML =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5 5 12h4v7h6v-7h4l-7-7Z"/></svg>';
+  moveDownButton.type = "button";
+  moveDownButton.className = "icon-button";
+  moveDownButton.setAttribute("aria-label", "Move file down");
+  moveDownButton.innerHTML =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19 19 12h-4V5H9v7H5l7 7Z"/></svg>';
   editorPanel.className = "editor-panel";
   form.className = "file-fields";
   gpsEditorEl.className = "gps-editor";
@@ -1489,21 +1898,46 @@ function appendFileEditor(file: LoadedFile) {
   clearButton.textContent = "Clear";
 
   previewButton.addEventListener("click", () => openImageModal(file.previewUrl));
+  editFilenameButton.addEventListener("click", () => beginFilenameEdit(file));
+  filenameInput.addEventListener("input", () => {
+    file.filename = filenameInput.value;
+  });
+  filenameInput.addEventListener("blur", () => finishFilenameEdit(file));
+  filenameInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finishFilenameEdit(file);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      filenameInput.value = file.filename;
+      finishFilenameEdit(file);
+    }
+  });
+  moveUpButton.addEventListener("click", () => moveLoadedFile(file.id, -1));
+  moveDownButton.addEventListener("click", () => moveLoadedFile(file.id, 1));
   downloadButton.addEventListener("click", () => downloadLoadedFile(file.id));
   clearButton.addEventListener("click", () => removeLoadedFile(file.id));
 
   previewButton.appendChild(previewImg);
-  previewInfo.appendChild(previewName);
+  previewNameRow.appendChild(filenameLabel);
+  previewNameRow.appendChild(editFilenameButton);
+  previewInfo.appendChild(previewNameRow);
+  previewInfo.appendChild(filenameInput);
   previewInfo.appendChild(previewHint);
+  reorderRail.appendChild(moveUpButton);
+  reorderRail.appendChild(moveDownButton);
   previewPanel.appendChild(previewButton);
   previewPanel.appendChild(previewInfo);
+  previewFrame.appendChild(reorderRail);
+  previewFrame.appendChild(previewPanel);
+  previewColumn.appendChild(previewFrame);
   gpsEditorEl.appendChild(gpsMapElement);
   gpsEditorEl.appendChild(gpsHintEl);
   editorPanel.appendChild(form);
   editorPanel.appendChild(gpsEditorEl);
   actions.appendChild(downloadButton);
   actions.appendChild(clearButton);
-  meta.appendChild(previewPanel);
+  meta.appendChild(previewColumn);
   meta.appendChild(editorPanel);
   container.appendChild(meta);
   container.appendChild(actions);
@@ -1515,9 +1949,17 @@ function appendFileEditor(file: LoadedFile) {
     gpsEditor: gpsEditorEl,
     gpsMapEl: gpsMapElement,
     gpsHint: gpsHintEl,
+    filenameInput,
+    filenameLabel,
+    editFilenameButton,
+    previewButton,
+    previewImg,
+    moveUpButton,
+    moveDownButton,
   };
 
   renderFields(file, form);
+  refreshLoadedFileControls();
 }
 
 // convert EXIF "YYYY:MM:DD HH:MM:SS" to input datetime-local value "YYYY-MM-DDTHH:MM:SS"
