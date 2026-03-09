@@ -1,6 +1,9 @@
 import { FileReader } from "./FileReader";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import markerIconUrl from "leaflet/dist/images/marker-icon.png?inline";
+import markerIcon2xUrl from "leaflet/dist/images/marker-icon-2x.png?inline";
+import markerShadowUrl from "leaflet/dist/images/marker-shadow.png?inline";
 
 type IDF = {
   type: number;
@@ -98,6 +101,12 @@ const TAGS = {
 // State
 let activeDateTimePicker: DateTimePickerState | null = null;
 let loadedFiles: LoadedFile[] = [];
+
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: markerIcon2xUrl,
+  iconUrl: markerIconUrl,
+  shadowUrl: markerShadowUrl,
+});
 
 const MONTH_NAMES = [
   "January",
