@@ -29,6 +29,8 @@ type EXIFField = {
   _gpsRefOffset?: number;
   _gpsRefCount?: number;
   _gpsAltitudeRefOffset?: number;
+  _timezoneOffset?: string;
+  _subSeconds?: string;
 };
 
 type DateTimePickerState = {
@@ -54,6 +56,8 @@ type DateTimePickerState = {
   selectedDate: Date;
   viewYear: number;
   viewMonth: number;
+  timezoneOffset?: string;
+  subSeconds?: string;
 };
 
 type LoadedFile = {
@@ -62,6 +66,8 @@ type LoadedFile = {
   originalFilename: string;
   workingBuffer: ArrayBuffer;
   parsedFields: EXIFField[];
+  xmpMetadata?: XMPMetadata | null;
+  xmpRemoved?: boolean;
   previewUrl: string;
   gpsMap?: L.Map | null;
   gpsMarker?: L.Marker | null;
@@ -71,6 +77,9 @@ type LoadedFile = {
     gpsEditor: HTMLDivElement;
     gpsMapEl: HTMLDivElement;
     gpsHint: HTMLDivElement;
+    xmpPanel: HTMLDivElement;
+    syncButton: HTMLButtonElement;
+    clearXmpButton: HTMLButtonElement;
     filenameInput: HTMLInputElement;
     filenameLabel: HTMLSpanElement;
     editFilenameButton: HTMLButtonElement;
@@ -79,6 +88,24 @@ type LoadedFile = {
     moveUpButton: HTMLButtonElement;
     moveDownButton: HTMLButtonElement;
   };
+};
+
+type XMPHistoryItem = {
+  action?: string;
+  changed?: string;
+  softwareAgent?: string;
+  when?: string;
+};
+
+type XMPMetadata = {
+  toolkit?: string;
+  modifyDate?: string;
+  metadataDate?: string;
+  creatorTool?: string;
+  documentId?: string;
+  instanceId?: string;
+  originalDocumentId?: string;
+  history: XMPHistoryItem[];
 };
 
 // EXIF tag numbers we care about
@@ -96,6 +123,12 @@ const TAGS = {
   DateTimeOriginal: 0x9003, // Exif
   CreateDate: 0x9004, // alias for DateTimeDigitized
   DateTimeDigitized: 0x9004, // Exif
+  OffsetTime: 0x9010,
+  OffsetTimeOriginal: 0x9011,
+  OffsetTimeDigitized: 0x9012,
+  SubSecTime: 0x9290,
+  SubSecTimeOriginal: 0x9291,
+  SubSecTimeDigitized: 0x9292,
   GPSDateStamp: 0x001d, // GPSDateStamp
   GPSTimeStamp: 0x0007, // GPSTimeStamp
 
@@ -246,9 +279,92 @@ function getDownloadFilename(file: LoadedFile) {
   return sanitizeFilename(file.filename, file.originalFilename);
 }
 
+function getXmpSegmentRanges(arrayBuffer: ArrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const xmpHeader = "http://ns.adobe.com/xap/1.0/\0";
+  const decoder = new TextDecoder();
+  const ranges: Array<{ start: number; end: number }> = [];
+
+  let offset = 2;
+  while (offset + 4 <= bytes.length) {
+    const markerOffset = offset;
+    const marker = (bytes[offset] << 8) | bytes[offset + 1];
+    offset += 2;
+
+    if (marker === TAGS.END_OF_IMAGE) {
+      break;
+    }
+
+    if ((marker & TAGS.VALID_MARKER_PREFIX) !== TAGS.VALID_MARKER_PREFIX) {
+      break;
+    }
+
+    if (offset + 2 > bytes.length) {
+      break;
+    }
+
+    const segmentLength = (bytes[offset] << 8) | bytes[offset + 1];
+    const payloadStart = offset + 2;
+    const segmentEnd = markerOffset + 2 + segmentLength;
+
+    if (segmentEnd > bytes.length) {
+      break;
+    }
+
+    if (
+      marker === TAGS.APP1_MARKER &&
+      payloadStart + xmpHeader.length <= bytes.length &&
+      decoder.decode(bytes.subarray(payloadStart, payloadStart + xmpHeader.length)) ===
+        xmpHeader
+    ) {
+      ranges.push({ start: markerOffset, end: segmentEnd });
+    }
+
+    offset = segmentEnd;
+  }
+
+  return ranges;
+}
+
+function stripXmpSegments(arrayBuffer: ArrayBuffer) {
+  const ranges = getXmpSegmentRanges(arrayBuffer);
+  if (ranges.length === 0) {
+    return arrayBuffer;
+  }
+
+  const bytes = new Uint8Array(arrayBuffer);
+  const keptParts: Uint8Array[] = [];
+  let cursor = 0;
+
+  for (const range of ranges) {
+    if (cursor < range.start) {
+      keptParts.push(bytes.slice(cursor, range.start));
+    }
+    cursor = range.end;
+  }
+
+  if (cursor < bytes.length) {
+    keptParts.push(bytes.slice(cursor));
+  }
+
+  const totalLength = keptParts.reduce((sum, part) => sum + part.length, 0);
+  const result = new Uint8Array(totalLength);
+  let writeOffset = 0;
+
+  keptParts.forEach((part) => {
+    result.set(part, writeOffset);
+    writeOffset += part.length;
+  });
+
+  return result.buffer;
+}
+
 function getEditedBlob(file: LoadedFile) {
   applyFormToWorkingBuffer(file);
-  return new Blob([file.workingBuffer], { type: "image/jpeg" });
+  const outputBuffer = file.xmpRemoved
+    ? stripXmpSegments(file.workingBuffer)
+    : file.workingBuffer;
+  return new Blob([outputBuffer], { type: "image/jpeg" });
 }
 
 function triggerBlobDownload(blob: Blob, filename: string) {
@@ -494,6 +610,100 @@ async function shareLoadedFile(fileId: string) {
   }
 }
 
+function parseXmpMetadata(arrayBuffer: ArrayBuffer): XMPMetadata | null {
+  const bytes = new Uint8Array(arrayBuffer);
+  const xmpHeader = "http://ns.adobe.com/xap/1.0/\0";
+  const decoder = new TextDecoder();
+  const getAttrByLocalName = (element: Element, localName: string) => {
+    const attrName = element
+      .getAttributeNames()
+      .find((name) => name.split(":").pop() === localName);
+    return attrName ? element.getAttribute(attrName) ?? undefined : undefined;
+  };
+
+  let offset = 2;
+  while (offset + 4 <= bytes.length) {
+    const marker = (bytes[offset] << 8) | bytes[offset + 1];
+    offset += 2;
+
+    if (marker === TAGS.END_OF_IMAGE) {
+      break;
+    }
+
+    if ((marker & TAGS.VALID_MARKER_PREFIX) !== TAGS.VALID_MARKER_PREFIX) {
+      break;
+    }
+
+    if (offset + 2 > bytes.length) {
+      break;
+    }
+
+    const segmentLength = (bytes[offset] << 8) | bytes[offset + 1];
+    const payloadStart = offset + 2;
+    const payloadEnd = offset + segmentLength;
+
+    if (
+      marker === TAGS.APP1_MARKER &&
+      payloadEnd <= bytes.length &&
+      decoder.decode(bytes.subarray(payloadStart, payloadStart + xmpHeader.length)) ===
+        xmpHeader
+    ) {
+      const xml = decoder.decode(bytes.subarray(payloadStart + xmpHeader.length, payloadEnd));
+      const doc = new DOMParser().parseFromString(xml, "application/xml");
+
+      if (doc.querySelector("parsererror")) {
+        return null;
+      }
+
+      const allElements = Array.from(doc.getElementsByTagName("*"));
+      const getFirstAttribute = (localName: string) =>
+        allElements
+          .map((element) => getAttrByLocalName(element, localName))
+          .find((value) => !!value);
+
+      const history: XMPHistoryItem[] = allElements
+        .filter((element) => element.localName === "li")
+        .map((item) => ({
+          action: getAttrByLocalName(item, "action"),
+          changed: getAttrByLocalName(item, "changed"),
+          softwareAgent: getAttrByLocalName(item, "softwareAgent"),
+          when: getAttrByLocalName(item, "when"),
+        }))
+        .filter((entry) => entry.action || entry.changed || entry.softwareAgent || entry.when);
+
+      const metadata: XMPMetadata = {
+        toolkit: getFirstAttribute("xmptk"),
+        modifyDate: getFirstAttribute("ModifyDate"),
+        metadataDate: getFirstAttribute("MetadataDate"),
+        creatorTool: getFirstAttribute("CreatorTool"),
+        documentId: getFirstAttribute("DocumentID"),
+        instanceId: getFirstAttribute("InstanceID"),
+        originalDocumentId: getFirstAttribute("OriginalDocumentID"),
+        history,
+      };
+
+      if (
+        !metadata.toolkit &&
+        !metadata.modifyDate &&
+        !metadata.metadataDate &&
+        !metadata.creatorTool &&
+        !metadata.documentId &&
+        !metadata.instanceId &&
+        !metadata.originalDocumentId &&
+        metadata.history.length === 0
+      ) {
+        return null;
+      }
+
+      return metadata;
+    }
+
+    offset += segmentLength;
+  }
+
+  return null;
+}
+
 async function handleFileList(list: FileList | null) {
   if (!list || list.length === 0) {
     alert("No file selected.");
@@ -511,6 +721,7 @@ async function handleFileList(list: FileList | null) {
     const originalBuffer = await fileReader.readAsArrayBuffer(file);
     const workingBuffer = originalBuffer.slice(0);
     let fileFields: EXIFField[] = [];
+    const xmpMetadata = parseXmpMetadata(originalBuffer);
 
     try {
       fileFields = parseExifDates(workingBuffer);
@@ -524,6 +735,8 @@ async function handleFileList(list: FileList | null) {
       originalFilename: file.name,
       workingBuffer,
       parsedFields: fileFields,
+      xmpMetadata,
+      xmpRemoved: false,
       previewUrl: URL.createObjectURL(file),
     });
   }
@@ -671,9 +884,195 @@ function formatPickerDateTimeValue(date: Date) {
   return `${y}-${m}-${d}T${hh}:${mm}:${ss}`;
 }
 
-function getEpochTimestampValue(date: Date) {
-  return Math.floor(date.getTime() / 1000).toString();
+function parseExifOffsetMinutes(offset?: string) {
+  if (!offset) {
+    return null;
+  }
+
+  const match = offset.match(/^([+-])(\d{2}):(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const [, sign, hours, minutes] = match;
+  const totalMinutes = Number(hours) * 60 + Number(minutes);
+  return sign === "-" ? -totalMinutes : totalMinutes;
 }
+
+function parseExifSubSecondsMillis(subSeconds?: string) {
+  if (!subSeconds) {
+    return 0;
+  }
+
+  const digits = subSeconds.replace(/\D/g, "");
+  if (!digits) {
+    return 0;
+  }
+
+  return Number(`0.${digits}`) * 1000;
+}
+
+function getPreferredPhotoOffset(fields: EXIFField[]) {
+  return (
+    fields.find(
+      (field) =>
+        field.name === "DateTimeOriginal" &&
+        typeof field._timezoneOffset === "string"
+    )?._timezoneOffset ??
+    fields.find(
+      (field) =>
+        field.name === "CreateDate" && typeof field._timezoneOffset === "string"
+    )?._timezoneOffset ??
+    fields.find(
+      (field) =>
+        field.name === "ModifyDate" && typeof field._timezoneOffset === "string"
+    )?._timezoneOffset
+  );
+}
+
+function shiftUtcDateToOffset(date: Date, offsetMinutes: number) {
+  return new Date(date.getTime() + offsetMinutes * 60 * 1000);
+}
+
+function formatDateParts(date: Date, useUtc = false) {
+  const year = useUtc ? date.getUTCFullYear() : date.getFullYear();
+  const month = ((useUtc ? date.getUTCMonth() : date.getMonth()) + 1)
+    .toString()
+    .padStart(2, "0");
+  const day = (useUtc ? date.getUTCDate() : date.getDate())
+    .toString()
+    .padStart(2, "0");
+  return { year, month, day };
+}
+
+function formatTimeParts(date: Date, useUtc = false) {
+  const hours = (useUtc ? date.getUTCHours() : date.getHours())
+    .toString()
+    .padStart(2, "0");
+  const minutes = (useUtc ? date.getUTCMinutes() : date.getMinutes())
+    .toString()
+    .padStart(2, "0");
+  const seconds = (useUtc ? date.getUTCSeconds() : date.getSeconds())
+    .toString()
+    .padStart(2, "0");
+  return { hours, minutes, seconds };
+}
+
+function getGpsUtcDate(dateStr: string, timeArr: number[]) {
+  const dateMatch = dateStr.match(/(\d{4}):(\d{2}):(\d{2})/);
+  if (!dateMatch || !Array.isArray(timeArr) || timeArr.length !== 3) {
+    return null;
+  }
+
+  const [, year, month, day] = dateMatch;
+  const [h, m, s] = timeArr;
+
+  return new Date(
+    Date.UTC(
+      parseInt(year),
+      parseInt(month) - 1,
+      parseInt(day),
+      h,
+      m,
+      s || 0
+    )
+  );
+}
+
+function getGpsLocalDateTimeFromUtc(
+  dateStr: string,
+  timeArr: number[],
+  timezoneOffset?: string
+) {
+  const utcDate = getGpsUtcDate(dateStr, timeArr);
+  if (!utcDate) {
+    return null;
+  }
+
+  const offsetMinutes = parseExifOffsetMinutes(timezoneOffset);
+  if (offsetMinutes === null) {
+    return {
+      date: formatDateParts(utcDate),
+      time: formatTimeParts(utcDate),
+    };
+  }
+
+  const shifted = shiftUtcDateToOffset(utcDate, offsetMinutes);
+  return {
+    date: formatDateParts(shifted, true),
+    time: formatTimeParts(shifted, true),
+  };
+}
+
+function getGpsUtcPartsFromLocalInput(
+  year: number,
+  month: number,
+  day: number,
+  hours: number,
+  minutes: number,
+  seconds: number,
+  timezoneOffset?: string
+) {
+  const offsetMinutes = parseExifOffsetMinutes(timezoneOffset);
+
+  if (offsetMinutes === null) {
+    const localDate = new Date(year, month - 1, day, hours, minutes, seconds);
+    return {
+      year: localDate.getUTCFullYear(),
+      month: localDate.getUTCMonth() + 1,
+      day: localDate.getUTCDate(),
+      hours: localDate.getUTCHours(),
+      minutes: localDate.getUTCMinutes(),
+      seconds: localDate.getUTCSeconds(),
+    };
+  }
+
+  const utcMillis =
+    Date.UTC(year, month - 1, day, hours, minutes, seconds) -
+    offsetMinutes * 60 * 1000;
+  const utcDate = new Date(utcMillis);
+  return {
+    year: utcDate.getUTCFullYear(),
+    month: utcDate.getUTCMonth() + 1,
+    day: utcDate.getUTCDate(),
+    hours: utcDate.getUTCHours(),
+    minutes: utcDate.getUTCMinutes(),
+    seconds: utcDate.getUTCSeconds(),
+  };
+}
+
+function getEpochTimestampValue(
+  date: Date,
+  timezoneOffset?: string,
+  subSeconds?: string
+) {
+  const offsetMinutes = parseExifOffsetMinutes(timezoneOffset);
+  const subSecondMillis = parseExifSubSecondsMillis(subSeconds);
+
+  if (offsetMinutes === null) {
+    return Math.floor((date.getTime() + subSecondMillis) / 1000).toString();
+  }
+
+  const utcMillis =
+    Date.UTC(
+      date.getFullYear(),
+      date.getMonth(),
+      date.getDate(),
+      date.getHours(),
+      date.getMinutes(),
+      date.getSeconds(),
+      Math.round(subSecondMillis)
+    ) -
+    offsetMinutes * 60 * 1000;
+
+  return Math.floor(utcMillis / 1000).toString();
+}
+
+const COPY_ICON_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1a3 3 0 0 1 3 3v9h-2V4a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v1H4V4a3 3 0 0 1 3-3h9Zm-11 6h9a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V10a3 3 0 0 1 3-3Zm0 2a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V10a1 1 0 0 0-1-1H5Z"/></svg>';
+
+const CHECK_ICON_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.55 18.2 4.3 12.95l1.4-1.4 3.85 3.85 8.75-8.75 1.4 1.4-10.15 10.15Z"/></svg>';
 
 async function copyTextToClipboard(value: string) {
   if (navigator.clipboard?.writeText) {
@@ -930,7 +1329,11 @@ function adjustVisibleSegmentValue(
 
 function syncDateTimePickerValue(state: DateTimePickerState) {
   state.hiddenInput.value = formatPickerDateTimeValue(state.selectedDate);
-  state.epochInput.value = getEpochTimestampValue(state.selectedDate);
+  state.epochInput.value = getEpochTimestampValue(
+    state.selectedDate,
+    state.timezoneOffset,
+    state.subSeconds
+  );
   state.monthInput.value = (state.selectedDate.getMonth() + 1)
     .toString()
     .padStart(2, "0");
@@ -1134,10 +1537,12 @@ function positionDateTimePickerPopup(state: DateTimePickerState) {
   state.popup.style.maxHeight = `${Math.max(220, viewportHeight - top - padding)}px`;
 }
 
-function createDateTimePicker(idx: number, labelId: string, initialValue: string) {
+function createDateTimePicker(idx: number, labelId: string, fieldData: EXIFField) {
+  const initialValue = toInputDateTime(fieldData.value as string);
   const initialDate = parseInputDateTimeValue(initialValue) ?? new Date();
   const root = document.createElement("div");
   const hiddenInput = document.createElement("input");
+  const controls = document.createElement("div");
   const field = document.createElement("div");
   const segmentGroup = document.createElement("div");
   const monthInput = document.createElement("input");
@@ -1168,6 +1573,7 @@ function createDateTimePicker(idx: number, labelId: string, initialValue: string
   const popupId = `field-${idx}-picker`;
 
   root.className = "datetime-picker";
+  controls.className = "datetime-picker-controls";
   field.className = "datetime-picker-field";
   segmentGroup.className = "datetime-picker-segments";
 
@@ -1216,7 +1622,7 @@ function createDateTimePicker(idx: number, labelId: string, initialValue: string
   monthInput.id = controlId;
 
   toggleButton.type = "button";
-  toggleButton.className = "datetime-picker-toggle";
+  toggleButton.className = "datetime-picker-toggle datetime-picker-action";
   toggleButton.setAttribute("aria-label", "Open date and time picker");
   toggleButton.setAttribute("aria-haspopup", "dialog");
   toggleButton.setAttribute("aria-expanded", "false");
@@ -1236,17 +1642,13 @@ function createDateTimePicker(idx: number, labelId: string, initialValue: string
   visibleMeridiemInput.setAttribute("aria-controls", popupId);
   visibleMeridiemInput.setAttribute("aria-labelledby", labelId);
 
-  epochInput.type = "text";
-  epochInput.className = "datetime-picker-epoch-input";
-  epochInput.inputMode = "numeric";
-  epochInput.readOnly = true;
-  epochInput.tabIndex = 0;
-  epochInput.setAttribute("aria-label", "Epoch timestamp");
+  epochInput.type = "hidden";
 
   copyEpochButton.type = "button";
-  copyEpochButton.className = "datetime-picker-copy";
-  copyEpochButton.textContent = "Copy epoch";
+  copyEpochButton.className = "datetime-picker-copy datetime-picker-action";
   copyEpochButton.setAttribute("aria-label", "Copy epoch timestamp");
+  copyEpochButton.title = "Copy epoch timestamp";
+  copyEpochButton.innerHTML = COPY_ICON_SVG;
 
   popup.id = popupId;
   popup.hidden = true;
@@ -1371,6 +1773,8 @@ function createDateTimePicker(idx: number, labelId: string, initialValue: string
     selectedDate: initialDate,
     viewYear: initialDate.getFullYear(),
     viewMonth: initialDate.getMonth(),
+    timezoneOffset: fieldData._timezoneOffset,
+    subSeconds: fieldData._subSeconds,
   };
 
   prevButton.addEventListener("click", () => {
@@ -1558,21 +1962,25 @@ function createDateTimePicker(idx: number, labelId: string, initialValue: string
     }
   });
 
-  epochInput.addEventListener("focus", () => epochInput.select());
-  epochInput.addEventListener("click", () => epochInput.select());
-
   copyEpochButton.addEventListener("click", async () => {
     try {
       await copyTextToClipboard(epochInput.value);
-      copyEpochButton.textContent = "Copied";
+      copyEpochButton.dataset.state = "success";
+      copyEpochButton.title = "Copied epoch timestamp";
+      copyEpochButton.innerHTML = CHECK_ICON_SVG;
       window.setTimeout(() => {
-        copyEpochButton.textContent = "Copy epoch";
+        copyEpochButton.dataset.state = "";
+        copyEpochButton.title = "Copy epoch timestamp";
+        copyEpochButton.innerHTML = COPY_ICON_SVG;
       }, 1200);
     } catch (error) {
       console.error("Failed to copy epoch timestamp", error);
-      copyEpochButton.textContent = "Copy failed";
+      copyEpochButton.dataset.state = "error";
+      copyEpochButton.title = "Failed to copy epoch timestamp";
       window.setTimeout(() => {
-        copyEpochButton.textContent = "Copy epoch";
+        copyEpochButton.dataset.state = "";
+        copyEpochButton.title = "Copy epoch timestamp";
+        copyEpochButton.innerHTML = COPY_ICON_SVG;
       }, 1600);
     }
   });
@@ -1608,10 +2016,11 @@ function createDateTimePicker(idx: number, labelId: string, initialValue: string
   segmentGroup.appendChild(visibleMeridiemInput);
 
   field.appendChild(segmentGroup);
-  field.appendChild(epochInput);
-  field.appendChild(copyEpochButton);
   field.appendChild(toggleButton);
-  root.appendChild(field);
+  controls.appendChild(epochInput);
+  controls.appendChild(field);
+  controls.appendChild(copyEpochButton);
+  root.appendChild(controls);
   root.appendChild(popup);
 
   renderDateTimePicker(state);
@@ -1709,6 +2118,7 @@ function setupGpsEditor(file: LoadedFile) {
 
 function renderFields(file: LoadedFile, form: HTMLFormElement) {
   form.innerHTML = "";
+  updateSyncButtonVisibility(file);
 
   if (!file.parsedFields.length) {
     return;
@@ -1736,6 +2146,7 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
       }
       return a.idx - b.idx;
     });
+  const photoTimezoneOffset = getPreferredPhotoOffset(file.parsedFields);
 
   // Helper function to find corresponding date for a time field
   function findCorrespondingDate(timeField: EXIFField): string | null {
@@ -1792,18 +2203,36 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
       let localDateValue = "";
 
       if (inputDateValue) {
-        // Parse as UTC date
         const [year, month, day] = inputDateValue.split("-").map(Number);
         if (!isNaN(year) && !isNaN(month) && !isNaN(day)) {
-          // Create a Date object in UTC
-          const utcDate = new Date(Date.UTC(year, month - 1, day));
-          // Convert to local date
-          const localYear = utcDate.getFullYear();
-          const localMonth = (utcDate.getMonth() + 1)
-            .toString()
-            .padStart(2, "0");
-          const localDay = utcDate.getDate().toString().padStart(2, "0");
-          localDateValue = `${localYear}-${localMonth}-${localDay}`;
+          if (f.ifd === "GPS" && f.name === "GPSDateStamp") {
+            const gpsTimeField = file.parsedFields.find(
+              (field) =>
+                field.ifd === "GPS" &&
+                field.name === "GPSTimeStamp" &&
+                Array.isArray(field.value)
+            );
+            const localGpsDateTime =
+              gpsTimeField &&
+              getGpsLocalDateTimeFromUtc(
+                f.value as string,
+                gpsTimeField.value as number[],
+                photoTimezoneOffset
+              );
+            if (localGpsDateTime) {
+              localDateValue = `${localGpsDateTime.date.year}-${localGpsDateTime.date.month}-${localGpsDateTime.date.day}`;
+            }
+          }
+
+          if (!localDateValue) {
+            const utcDate = new Date(Date.UTC(year, month - 1, day));
+            const localYear = utcDate.getFullYear();
+            const localMonth = (utcDate.getMonth() + 1)
+              .toString()
+              .padStart(2, "0");
+            const localDay = utcDate.getDate().toString().padStart(2, "0");
+            localDateValue = `${localYear}-${localMonth}-${localDay}`;
+          }
         }
       }
 
@@ -1824,43 +2253,48 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
       let localTime = "";
 
       if (utcTime) {
-        // utcTime is "HH:MM:SS"
         const [h, m, s] = utcTime.split(":").map(Number);
-
-        // Find the corresponding date from the image instead of using today's date
         const correspondingDate = findCorrespondingDate(f);
 
         if (correspondingDate) {
-          // Parse the date from the image
-          const dateMatch = correspondingDate.match(/(\d{4}):(\d{2}):(\d{2})/);
-          if (dateMatch) {
-            const [_, year, month, day] = dateMatch;
-            // Create UTC date using the image's date and time
-            const utcDate = new Date(
-              Date.UTC(
-                parseInt(year),
-                parseInt(month) - 1, // Month is 0-indexed
-                parseInt(day),
-                h,
-                m,
-                s || 0
-              )
+          if (f.ifd === "GPS" && f.name === "GPSTimeStamp") {
+            const localGpsDateTime = getGpsLocalDateTimeFromUtc(
+              correspondingDate,
+              [h, m, s || 0],
+              photoTimezoneOffset
             );
-            // Convert to local time
-            const localHours = utcDate.getHours().toString().padStart(2, "0");
-            const localMinutes = utcDate
-              .getMinutes()
-              .toString()
-              .padStart(2, "0");
-            const localSeconds = utcDate
-              .getSeconds()
-              .toString()
-              .padStart(2, "0");
-            localTime = `${localHours}:${localMinutes}:${localSeconds}`;
+            if (localGpsDateTime) {
+              localTime = `${localGpsDateTime.time.hours}:${localGpsDateTime.time.minutes}:${localGpsDateTime.time.seconds}`;
+            }
+          }
+
+          if (!localTime) {
+            const dateMatch = correspondingDate.match(/(\d{4}):(\d{2}):(\d{2})/);
+            if (dateMatch) {
+              const [_, year, month, day] = dateMatch;
+              const utcDate = new Date(
+                Date.UTC(
+                  parseInt(year),
+                  parseInt(month) - 1,
+                  parseInt(day),
+                  h,
+                  m,
+                  s || 0
+                )
+              );
+              const localHours = utcDate.getHours().toString().padStart(2, "0");
+              const localMinutes = utcDate
+                .getMinutes()
+                .toString()
+                .padStart(2, "0");
+              const localSeconds = utcDate
+                .getSeconds()
+                .toString()
+                .padStart(2, "0");
+              localTime = `${localHours}:${localMinutes}:${localSeconds}`;
+            }
           }
         } else {
-          // Fallback: if no corresponding date found, use today's date
-          // but this should rarely happen with proper EXIF data
           const now = new Date();
           const utcDate = new Date(
             Date.UTC(
@@ -1872,7 +2306,6 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
               s || 0
             )
           );
-          // Convert to local time
           const localHours = utcDate.getHours().toString().padStart(2, "0");
           const localMinutes = utcDate.getMinutes().toString().padStart(2, "0");
           const localSeconds = utcDate.getSeconds().toString().padStart(2, "0");
@@ -1899,11 +2332,7 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
       control = input;
     } else {
       label.htmlFor = `field-${idx}`;
-      control = createDateTimePicker(
-        idx,
-        labelId,
-        toInputDateTime(f.value as string)
-      );
+      control = createDateTimePicker(idx, labelId, f);
     }
 
     row.appendChild(label);
@@ -1912,6 +2341,195 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
   });
 
   setupGpsEditor(file);
+}
+
+function getSyncSourceField(file: LoadedFile) {
+  return (
+    file.parsedFields.find(
+      (field) => field.type === "datetime" && field.name === "DateTimeOriginal"
+    ) ??
+    file.parsedFields.find(
+      (field) => field.type === "datetime" && field.name === "CreateDate"
+    ) ??
+    file.parsedFields.find(
+      (field) => field.type === "datetime" && field.name === "ModifyDate"
+    ) ??
+    null
+  );
+}
+
+function getPrimaryExifDateTimeFields(file: LoadedFile) {
+  const primaryFieldNames = new Set([
+    "ModifyDate",
+    "DateTimeOriginal",
+    "CreateDate",
+  ]);
+  return file.parsedFields.filter(
+    (field) => field.type === "datetime" && primaryFieldNames.has(field.name)
+  );
+}
+
+function getComparableExifEpoch(field: EXIFField) {
+  if (typeof field.value !== "string") {
+    return null;
+  }
+
+  const date = parseInputDateTimeValue(toInputDateTime(field.value));
+  if (!date) {
+    return null;
+  }
+
+  return getEpochTimestampValue(date, field._timezoneOffset, field._subSeconds);
+}
+
+function hasPrimaryExifDateTimeMismatch(file: LoadedFile) {
+  const comparableEpochs = getPrimaryExifDateTimeFields(file)
+    .map((field) => getComparableExifEpoch(field))
+    .filter((epoch): epoch is string => epoch !== null);
+
+  return comparableEpochs.length > 1 && new Set(comparableEpochs).size > 1;
+}
+
+function updateSyncButtonVisibility(file: LoadedFile) {
+  const syncButton = file.elements?.syncButton;
+  if (!syncButton) {
+    return;
+  }
+
+  syncButton.hidden = !hasPrimaryExifDateTimeMismatch(file);
+}
+
+function syncDateTimeFieldsToOriginal(file: LoadedFile) {
+  if (!file.elements) {
+    return;
+  }
+
+  const sourceField = getSyncSourceField(file);
+  if (!sourceField || typeof sourceField.value !== "string") {
+    return;
+  }
+
+  const sourceValue = toInputDateTime(sourceField.value);
+  if (!sourceValue) {
+    return;
+  }
+
+  file.parsedFields.forEach((field, idx) => {
+    if (
+      field.type !== "datetime" ||
+      !["ModifyDate", "DateTimeOriginal", "CreateDate"].includes(field.name)
+    ) {
+      return;
+    }
+
+    const input = file.elements?.form.querySelector(
+      `[data-idx="${idx}"]`
+    ) as HTMLInputElement | null;
+
+    if (!input) {
+      return;
+    }
+
+    input.value = sourceValue;
+    field.value = fromInputDateTime(sourceValue);
+  });
+
+  applyFormToWorkingBuffer(file);
+  renderFields(file, file.elements.form);
+  updateSyncButtonVisibility(file);
+  status.textContent = `Synced EXIF timestamps for ${getDownloadFilename(file)}.`;
+}
+
+function renderXmpPanel(file: LoadedFile, panel: HTMLDivElement) {
+  panel.innerHTML = "";
+
+  const metadata = file.xmpMetadata;
+  if (!metadata) {
+    panel.hidden = true;
+    return;
+  }
+
+  const latestHistory = metadata.history.at(-1);
+  const rows: Array<[string, string | undefined]> = [
+    ["Editor", latestHistory?.softwareAgent ?? metadata.creatorTool],
+    ["XMP ModifyDate", metadata.modifyDate],
+    ["XMP MetadataDate", metadata.metadataDate],
+    ["Toolkit", metadata.toolkit],
+    ["Document ID", metadata.documentId],
+    ["Instance ID", metadata.instanceId],
+  ];
+
+  const headingRow = document.createElement("div");
+  headingRow.className = "metadata-heading-row";
+  const heading = document.createElement("div");
+  heading.className = "metadata-heading";
+  heading.textContent = "XMP Metadata";
+  headingRow.appendChild(heading);
+
+  const clearButton = file.elements?.clearXmpButton ?? document.createElement("button");
+  clearButton.type = "button";
+  clearButton.className = "warning";
+  clearButton.textContent = "Clear XMP";
+  clearButton.hidden = !!file.xmpRemoved;
+  headingRow.appendChild(clearButton);
+  panel.appendChild(headingRow);
+
+  rows.forEach(([label, value]) => {
+    if (!value) {
+      return;
+    }
+
+    const row = document.createElement("div");
+    row.className = "metadata-row";
+    const labelEl = document.createElement("div");
+    labelEl.className = "metadata-label";
+    labelEl.textContent = label;
+    const valueEl = document.createElement("div");
+    valueEl.className = "metadata-value";
+    valueEl.textContent = value;
+    row.appendChild(labelEl);
+    row.appendChild(valueEl);
+    panel.appendChild(row);
+  });
+
+  if (metadata.history.length) {
+    const historyHeading = document.createElement("div");
+    historyHeading.className = "metadata-subheading";
+    historyHeading.textContent = "History";
+    panel.appendChild(historyHeading);
+
+    const historyList = document.createElement("div");
+    historyList.className = "metadata-history";
+
+    metadata.history.forEach((entry) => {
+      const item = document.createElement("div");
+      item.className = "metadata-history-item";
+      item.textContent = [
+        entry.action,
+        entry.softwareAgent,
+        entry.when,
+        entry.changed,
+      ]
+        .filter(Boolean)
+        .join(" • ");
+      historyList.appendChild(item);
+    });
+
+    panel.appendChild(historyList);
+  }
+
+  panel.hidden = false;
+}
+
+function clearXmpMetadata(file: LoadedFile) {
+  if (!file.elements || !file.xmpMetadata) {
+    return;
+  }
+
+  file.xmpRemoved = true;
+  file.xmpMetadata = null;
+  renderXmpPanel(file, file.elements.xmpPanel);
+  status.textContent = `Removed XMP metadata from ${getDownloadFilename(file)} for export.`;
 }
 
 function appendFileEditor(file: LoadedFile) {
@@ -1936,7 +2554,10 @@ function appendFileEditor(file: LoadedFile) {
   const gpsEditorEl = document.createElement("div");
   const gpsMapElement = document.createElement("div");
   const gpsHintEl = document.createElement("div");
+  const xmpPanel = document.createElement("div");
   const actions = document.createElement("div");
+  const syncButton = document.createElement("button");
+  const clearXmpButton = document.createElement("button");
   const downloadButton = document.createElement("button");
   const clearButton = document.createElement("button");
 
@@ -1985,7 +2606,17 @@ function appendFileEditor(file: LoadedFile) {
   gpsEditorEl.style.display = "none";
   gpsMapElement.className = "gps-map";
   gpsHintEl.className = "muted";
+  xmpPanel.className = "metadata-panel";
+  xmpPanel.hidden = true;
   actions.className = "file-card-actions";
+  syncButton.type = "button";
+  syncButton.className = "warning";
+  syncButton.textContent = "Sync timestamps";
+  syncButton.hidden = !hasPrimaryExifDateTimeMismatch(file);
+  clearXmpButton.type = "button";
+  clearXmpButton.className = "warning";
+  clearXmpButton.textContent = "Clear XMP";
+  clearXmpButton.hidden = !file.xmpMetadata;
   downloadButton.type = "button";
   downloadButton.className = "primary";
   downloadButton.textContent = "Download";
@@ -2011,6 +2642,8 @@ function appendFileEditor(file: LoadedFile) {
   });
   moveUpButton.addEventListener("click", () => moveLoadedFile(file.id, -1));
   moveDownButton.addEventListener("click", () => moveLoadedFile(file.id, 1));
+  syncButton.addEventListener("click", () => syncDateTimeFieldsToOriginal(file));
+  clearXmpButton.addEventListener("click", () => clearXmpMetadata(file));
   downloadButton.addEventListener("click", () => downloadLoadedFile(file.id));
   clearButton.addEventListener("click", () => removeLoadedFile(file.id));
 
@@ -2027,24 +2660,15 @@ function appendFileEditor(file: LoadedFile) {
   previewFrame.appendChild(reorderRail);
   previewFrame.appendChild(previewPanel);
   previewColumn.appendChild(previewFrame);
-  gpsEditorEl.appendChild(gpsMapElement);
-  gpsEditorEl.appendChild(gpsHintEl);
-  editorPanel.appendChild(form);
-  editorPanel.appendChild(gpsEditorEl);
-  actions.appendChild(downloadButton);
-  actions.appendChild(clearButton);
-  meta.appendChild(previewColumn);
-  meta.appendChild(editorPanel);
-  container.appendChild(meta);
-  container.appendChild(actions);
-  fileListEl.appendChild(container);
-
   file.elements = {
     container,
     form,
     gpsEditor: gpsEditorEl,
     gpsMapEl: gpsMapElement,
     gpsHint: gpsHintEl,
+    xmpPanel,
+    syncButton,
+    clearXmpButton,
     filenameInput,
     filenameLabel,
     editFilenameButton,
@@ -2053,6 +2677,21 @@ function appendFileEditor(file: LoadedFile) {
     moveUpButton,
     moveDownButton,
   };
+
+  gpsEditorEl.appendChild(gpsMapElement);
+  gpsEditorEl.appendChild(gpsHintEl);
+  editorPanel.appendChild(form);
+  editorPanel.appendChild(gpsEditorEl);
+  renderXmpPanel(file, xmpPanel);
+  editorPanel.appendChild(xmpPanel);
+  actions.appendChild(syncButton);
+  actions.appendChild(downloadButton);
+  actions.appendChild(clearButton);
+  meta.appendChild(previewColumn);
+  meta.appendChild(editorPanel);
+  container.appendChild(meta);
+  container.appendChild(actions);
+  fileListEl.appendChild(container);
 
   renderFields(file, form);
   refreshLoadedFileControls();
@@ -2153,14 +2792,16 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
   if (!file.elements) {
     return;
   }
+  const { form } = file.elements;
 
-  const inputs = file.elements.form.querySelectorAll(
+  const inputs = form.querySelectorAll(
     '[data-field-input="true"]'
   ) as NodeListOf<HTMLInputElement>;
 
   const parsedFields = file.parsedFields;
   const dv = new DataView(file.workingBuffer);
   const littleEndian = getExifLittleEndian(dv);
+  const photoTimezoneOffset = getPreferredPhotoOffset(parsedFields);
 
   inputs.forEach((inp: HTMLInputElement) => {
     const idx = Number(inp.dataset.idx);
@@ -2180,16 +2821,29 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
         typeof newVal === "string"
       ) {
         const [y, m, d] = newVal.split(":");
-        const localDate = new Date(
-          parseInt(y),
-          parseInt(m) - 1, // Month is 0-indexed
-          parseInt(d)
+        const gpsTimeField = parsedFields.find(
+          (f) => f.name === "GPSTimeStamp" && f.ifd === "GPS"
         );
-        const utcYear = localDate.getUTCFullYear();
-        const utcMonth = (localDate.getUTCMonth() + 1)
-          .toString()
-          .padStart(2, "0");
-        const utcDay = localDate.getUTCDate().toString().padStart(2, "0");
+        const gpsTimeInput =
+          gpsTimeField &&
+          (form.querySelector(
+            `[data-idx="${parsedFields.indexOf(gpsTimeField)}"]`
+          ) as HTMLInputElement | null);
+        const [hours, minutes, seconds] = gpsTimeInput
+          ? fromInputTime(gpsTimeInput.value)
+          : [0, 0, 0];
+        const utcParts = getGpsUtcPartsFromLocalInput(
+          parseInt(y),
+          parseInt(m),
+          parseInt(d),
+          hours ?? 0,
+          minutes ?? 0,
+          seconds ?? 0,
+          photoTimezoneOffset
+        );
+        const utcYear = utcParts.year;
+        const utcMonth = utcParts.month.toString().padStart(2, "0");
+        const utcDay = utcParts.day.toString().padStart(2, "0");
         newVal = `${utcYear}:${utcMonth}:${utcDay}`;
       }
     } else if (field.type === "time") {
@@ -2210,20 +2864,19 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
           if (dateMatch) {
             const [_, year, month, day] = dateMatch;
             const [localHours, localMinutes, localSeconds] = newVal;
-
-            const localDate = new Date(
+            const utcParts = getGpsUtcPartsFromLocalInput(
               parseInt(year),
-              parseInt(month) - 1,
+              parseInt(month),
               parseInt(day),
               localHours,
               localMinutes,
-              localSeconds
+              localSeconds,
+              photoTimezoneOffset
             );
-
             newVal = [
-              localDate.getUTCHours(),
-              localDate.getUTCMinutes(),
-              localDate.getUTCSeconds(),
+              utcParts.hours,
+              utcParts.minutes,
+              utcParts.seconds,
             ];
           }
         }
@@ -2290,26 +2943,21 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
         );
         if (match) {
           const [_, y, m, d, hh, mm, ss] = match;
-
-          // Create local date object
-          const localDate = new Date(
+          const utcParts = getGpsUtcPartsFromLocalInput(
             parseInt(y),
-            parseInt(m) - 1,
+            parseInt(m),
             parseInt(d),
             parseInt(hh),
             parseInt(mm),
-            parseInt(ss)
+            parseInt(ss),
+            photoTimezoneOffset
           );
-
-          // Convert to UTC
-          const utcYear = localDate.getUTCFullYear();
-          const utcMonth = (localDate.getUTCMonth() + 1)
-            .toString()
-            .padStart(2, "0");
-          const utcDay = localDate.getUTCDate().toString().padStart(2, "0");
-          const utcHours = localDate.getUTCHours();
-          const utcMinutes = localDate.getUTCMinutes();
-          const utcSeconds = localDate.getUTCSeconds();
+          const utcYear = utcParts.year;
+          const utcMonth = utcParts.month.toString().padStart(2, "0");
+          const utcDay = utcParts.day.toString().padStart(2, "0");
+          const utcHours = utcParts.hours;
+          const utcMinutes = utcParts.minutes;
+          const utcSeconds = utcParts.seconds;
 
           // Write the GPS date stamp
           if (
@@ -2614,34 +3262,50 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
     return { entries, nextIFD };
   }
 
-  // read 0th IFD
-  const ifd0 = readIFD(firstIFDOffset);
+  function getAsciiValue(entries: Map<number, IDF>, tag: number) {
+    const entry = entries.get(tag);
+    return typeof entry?.value === "string" ? entry.value : undefined;
+  }
 
-  const ifd0DateTags = [
-    {
-      tag: TAGS.ModifyDate,
-      name: "ModifyDate",
-      label: "ModifyDate (Image DateTime, 0th IFD)",
-    },
-  ];
-
-  for (const fieldDef of ifd0DateTags) {
-    const entry = ifd0.entries.get(fieldDef.tag);
-    if (!entry) {
-      continue;
+  function pushDateTimeField(
+    entries: Map<number, IDF>,
+    fieldDef: {
+      tag: number;
+      name: string;
+      label: string;
+      ifd: string;
+      offsetTag?: number;
+      subSecTag?: number;
+      companionEntries?: Map<number, IDF>;
     }
+  ) {
+    const entry = entries.get(fieldDef.tag);
+    if (!entry) {
+      return;
+    }
+
+    const companionEntries = fieldDef.companionEntries ?? entries;
 
     results.push({
       label: fieldDef.label,
       name: fieldDef.name,
-      ifd: "0th",
+      ifd: fieldDef.ifd,
       tag: fieldDef.tag,
       count: entry.count,
       valueOffset: entry.valueOffset,
       value: entry.value,
       type: "datetime",
+      _timezoneOffset: fieldDef.offsetTag
+        ? getAsciiValue(companionEntries, fieldDef.offsetTag)
+        : undefined,
+      _subSeconds: fieldDef.subSecTag
+        ? getAsciiValue(companionEntries, fieldDef.subSecTag)
+        : undefined,
     });
   }
+
+  // read 0th IFD
+  const ifd0 = readIFD(firstIFDOffset);
 
   // check pointers to Exif and GPS
   let exifIFDOffset = null;
@@ -2660,36 +3324,40 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
 
   if (exifIFDOffset) {
     const exifIFD = readIFD(exifIFDOffset);
-    const exifDateTags = [
-      {
-        tag: TAGS.DateTimeOriginal,
-        name: "DateTimeOriginal",
-        label: "DateTimeOriginal (Exif IFD)",
-      },
-      {
-        tag: TAGS.CreateDate,
-        name: "CreateDate",
-        label: "CreateDate (DateTimeDigitized, Exif IFD)",
-      },
-    ];
-
-    for (const fieldDef of exifDateTags) {
-      const entry = exifIFD.entries.get(fieldDef.tag);
-      if (!entry) {
-        continue;
-      }
-
-      results.push({
-        label: fieldDef.label,
-        name: fieldDef.name,
-        ifd: "Exif",
-        tag: fieldDef.tag,
-        count: entry.count,
-        valueOffset: entry.valueOffset,
-        value: entry.value,
-        type: "datetime",
-      });
-    }
+    pushDateTimeField(ifd0.entries, {
+      tag: TAGS.ModifyDate,
+      name: "ModifyDate",
+      label: "ModifyDate (Image DateTime, 0th IFD)",
+      ifd: "0th",
+      offsetTag: TAGS.OffsetTime,
+      subSecTag: TAGS.SubSecTime,
+      companionEntries: exifIFD.entries,
+    });
+    pushDateTimeField(exifIFD.entries, {
+      tag: TAGS.DateTimeOriginal,
+      name: "DateTimeOriginal",
+      label: "DateTimeOriginal (Exif IFD)",
+      ifd: "Exif",
+      offsetTag: TAGS.OffsetTimeOriginal,
+      subSecTag: TAGS.SubSecTimeOriginal,
+    });
+    pushDateTimeField(exifIFD.entries, {
+      tag: TAGS.CreateDate,
+      name: "CreateDate",
+      label: "CreateDate (DateTimeDigitized, Exif IFD)",
+      ifd: "Exif",
+      offsetTag: TAGS.OffsetTimeDigitized,
+      subSecTag: TAGS.SubSecTimeDigitized,
+    });
+  } else {
+    pushDateTimeField(ifd0.entries, {
+      tag: TAGS.ModifyDate,
+      name: "ModifyDate",
+      label: "ModifyDate (Image DateTime, 0th IFD)",
+      ifd: "0th",
+      offsetTag: TAGS.OffsetTime,
+      subSecTag: TAGS.SubSecTime,
+    });
   }
 
   if (gpsIFDOffset) {
@@ -2780,34 +3448,15 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
     if (gpsDateEntry && gpsTimeEntry) {
       const dateStr = gpsDateEntry.value as string; // "YYYY:MM:DD"
       const timeArr = gpsTimeEntry.value as number[]; // [H, M, S] in UTC
+      const gpsDisplayOffset = getPreferredPhotoOffset(results);
 
-      // Parse the date components
-      const dateMatch = dateStr.match(/(\d{4}):(\d{2}):(\d{2})/);
-      if (dateMatch && Array.isArray(timeArr) && timeArr.length === 3) {
-        const [_, year, month, day] = dateMatch;
-        const [h, m, s] = timeArr;
-
-        // Create UTC datetime
-        const utcDate = new Date(
-          Date.UTC(
-            parseInt(year),
-            parseInt(month) - 1,
-            parseInt(day),
-            h,
-            m,
-            s || 0
-          )
-        );
-
-        // Convert to local datetime string
-        const localYear = utcDate.getFullYear();
-        const localMonth = (utcDate.getMonth() + 1).toString().padStart(2, "0");
-        const localDay = utcDate.getDate().toString().padStart(2, "0");
-        const localHours = utcDate.getHours().toString().padStart(2, "0");
-        const localMinutes = utcDate.getMinutes().toString().padStart(2, "0");
-        const localSeconds = utcDate.getSeconds().toString().padStart(2, "0");
-
-        const localDateTimeStr = `${localYear}:${localMonth}:${localDay} ${localHours}:${localMinutes}:${localSeconds}`;
+      const localGpsDateTime = getGpsLocalDateTimeFromUtc(
+        dateStr,
+        timeArr,
+        gpsDisplayOffset
+      );
+      if (localGpsDateTime) {
+        const localDateTimeStr = `${localGpsDateTime.date.year}:${localGpsDateTime.date.month}:${localGpsDateTime.date.day} ${localGpsDateTime.time.hours}:${localGpsDateTime.time.minutes}:${localGpsDateTime.time.seconds}`;
 
         results.push({
           label: "GPS DateTime (GPS IFD)",
@@ -2818,6 +3467,7 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
           valueOffset: gpsTimeEntry.valueOffset,
           value: localDateTimeStr,
           type: "datetime",
+          _timezoneOffset: gpsDisplayOffset,
           // Store references to both entries for saving later
           _gpsDateTag: TAGS.GPSDateStamp,
           _gpsDateOffset: gpsDateEntry.valueOffset,

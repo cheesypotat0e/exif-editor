@@ -24,3 +24,9 @@ dist-ssr
 *.sw?
 
 main2.ts
+
+output/
+.playwright-cli/
+
+IMG_*.JPG
+IMG_*.jpeg
