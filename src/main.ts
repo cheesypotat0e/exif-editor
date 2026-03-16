@@ -41,6 +41,8 @@ type DateTimePickerState = {
   visibleMinuteInput: HTMLInputElement;
   visibleSecondInput: HTMLInputElement;
   visibleMeridiemInput: HTMLInputElement;
+  epochInput: HTMLInputElement;
+  copyEpochButton: HTMLButtonElement;
   toggleButton: HTMLButtonElement;
   popup: HTMLDivElement;
   monthLabel: HTMLDivElement;
@@ -669,6 +671,28 @@ function formatPickerDateTimeValue(date: Date) {
   return `${y}-${m}-${d}T${hh}:${mm}:${ss}`;
 }
 
+function getEpochTimestampValue(date: Date) {
+  return Math.floor(date.getTime() / 1000).toString();
+}
+
+async function copyTextToClipboard(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = value;
+  input.setAttribute("readonly", "true");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  document.execCommand("copy");
+  document.body.removeChild(input);
+}
+
 function clampNumber(value: number, min: number, max: number) {
   if (Number.isNaN(value)) {
     return min;
@@ -762,6 +786,21 @@ function dmsFromDecimal(decimal: number) {
   const seconds = (minutesFull - minutes) * 60;
 
   return [degrees, minutes, seconds];
+}
+
+function getInlineValueByteLength(type: number, count: number) {
+  const bytesPerComponent =
+    type === 1 || type === 2 || type === 6 || type === 7
+      ? 1
+      : type === 3 || type === 8
+        ? 2
+        : type === 4 || type === 9 || type === 11
+          ? 4
+          : type === 5 || type === 10 || type === 12
+            ? 8
+            : 0;
+
+  return bytesPerComponent * count;
 }
 
 function addDays(date: Date, amount: number) {
@@ -891,6 +930,7 @@ function adjustVisibleSegmentValue(
 
 function syncDateTimePickerValue(state: DateTimePickerState) {
   state.hiddenInput.value = formatPickerDateTimeValue(state.selectedDate);
+  state.epochInput.value = getEpochTimestampValue(state.selectedDate);
   state.monthInput.value = (state.selectedDate.getMonth() + 1)
     .toString()
     .padStart(2, "0");
@@ -1107,6 +1147,8 @@ function createDateTimePicker(idx: number, labelId: string, initialValue: string
   const visibleMinuteInput = document.createElement("input");
   const visibleSecondInput = document.createElement("input");
   const visibleMeridiemInput = document.createElement("input");
+  const epochInput = document.createElement("input");
+  const copyEpochButton = document.createElement("button");
   const toggleButton = document.createElement("button");
   const popup = document.createElement("div");
   const header = document.createElement("div");
@@ -1193,6 +1235,18 @@ function createDateTimePicker(idx: number, labelId: string, initialValue: string
   visibleMeridiemInput.setAttribute("aria-expanded", "false");
   visibleMeridiemInput.setAttribute("aria-controls", popupId);
   visibleMeridiemInput.setAttribute("aria-labelledby", labelId);
+
+  epochInput.type = "text";
+  epochInput.className = "datetime-picker-epoch-input";
+  epochInput.inputMode = "numeric";
+  epochInput.readOnly = true;
+  epochInput.tabIndex = 0;
+  epochInput.setAttribute("aria-label", "Epoch timestamp");
+
+  copyEpochButton.type = "button";
+  copyEpochButton.className = "datetime-picker-copy";
+  copyEpochButton.textContent = "Copy epoch";
+  copyEpochButton.setAttribute("aria-label", "Copy epoch timestamp");
 
   popup.id = popupId;
   popup.hidden = true;
@@ -1304,6 +1358,8 @@ function createDateTimePicker(idx: number, labelId: string, initialValue: string
     visibleMinuteInput,
     visibleSecondInput,
     visibleMeridiemInput,
+    epochInput,
+    copyEpochButton,
     toggleButton,
     popup,
     monthLabel,
@@ -1502,6 +1558,25 @@ function createDateTimePicker(idx: number, labelId: string, initialValue: string
     }
   });
 
+  epochInput.addEventListener("focus", () => epochInput.select());
+  epochInput.addEventListener("click", () => epochInput.select());
+
+  copyEpochButton.addEventListener("click", async () => {
+    try {
+      await copyTextToClipboard(epochInput.value);
+      copyEpochButton.textContent = "Copied";
+      window.setTimeout(() => {
+        copyEpochButton.textContent = "Copy epoch";
+      }, 1200);
+    } catch (error) {
+      console.error("Failed to copy epoch timestamp", error);
+      copyEpochButton.textContent = "Copy failed";
+      window.setTimeout(() => {
+        copyEpochButton.textContent = "Copy epoch";
+      }, 1600);
+    }
+  });
+
   root.appendChild(hiddenInput);
   const slash1 = document.createElement("span");
   slash1.className = "datetime-picker-separator";
@@ -1533,6 +1608,8 @@ function createDateTimePicker(idx: number, labelId: string, initialValue: string
   segmentGroup.appendChild(visibleMeridiemInput);
 
   field.appendChild(segmentGroup);
+  field.appendChild(epochInput);
+  field.appendChild(copyEpochButton);
   field.appendChild(toggleButton);
   root.appendChild(field);
   root.appendChild(popup);
@@ -2402,12 +2479,13 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
       const type = view.getUint16(entryPtr + 2, littleEndian);
       const count = view.getUint32(entryPtr + 4, littleEndian);
       const valueOrOffset = entryPtr + 8;
+      const inlineValueBytes = getInlineValueByteLength(type, count);
 
       let valueOffsetAbsolute = null;
 
       if (type === 2) {
         // ASCII
-        if (count <= 4) {
+        if (inlineValueBytes <= 4) {
           // value is stored inline in the 4 bytes
           valueOffsetAbsolute = valueOrOffset; // these bytes are the value
         } else {
@@ -2433,18 +2511,21 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
           valueOffset: valueOffsetAbsolute,
           value: s,
         });
-      } else if (type === 5) {
+      } else if (type === 5 || type === 10) {
         // RATIONAL (two LONGs: numerator/denominator)
         // Value is always an offset to the actual data
         const off = view.getUint32(valueOrOffset, littleEndian);
         valueOffsetAbsolute = tiffStartOffset + off;
         let rationals: { numerator: number; denominator: number }[] = [];
         for (let k = 0; k < count; k++) {
-          const num = view.getUint32(valueOffsetAbsolute + k * 8, littleEndian);
-          const denom = view.getUint32(
-            valueOffsetAbsolute + k * 8 + 4,
-            littleEndian
-          );
+          const num =
+            type === 10
+              ? view.getInt32(valueOffsetAbsolute + k * 8, littleEndian)
+              : view.getUint32(valueOffsetAbsolute + k * 8, littleEndian);
+          const denom =
+            type === 10
+              ? view.getInt32(valueOffsetAbsolute + k * 8 + 4, littleEndian)
+              : view.getUint32(valueOffsetAbsolute + k * 8 + 4, littleEndian);
           rationals.push({ numerator: num, denominator: denom });
         }
         // Calculate the value for RATIONAL type: numerator/denominator as number or array of numbers
@@ -2466,8 +2547,13 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
           valueOffset: valueOffsetAbsolute,
           value,
         });
-      } else if (type === 1) {
-        valueOffsetAbsolute = valueOrOffset;
+      } else if (type === 1 || type === 7) {
+        if (inlineValueBytes <= 4) {
+          valueOffsetAbsolute = valueOrOffset;
+        } else {
+          const off = view.getUint32(valueOrOffset, littleEndian);
+          valueOffsetAbsolute = tiffStartOffset + off;
+        }
         const values: number[] = [];
         for (let k = 0; k < count; k++) {
           values.push(view.getUint8(valueOffsetAbsolute + k));
@@ -2480,39 +2566,45 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
           valueOffset: valueOffsetAbsolute,
           value: count === 1 ? values[0] : values,
         });
-      } else {
-        // store meta for non-ascii
-        if (type === 4 || type === 3) {
-          // uint32 or uint16: we may need pointers
-          if (tag === TAGS.ExifIFDPointer || tag === TAGS.GPSInfoIFDPointer) {
-            // read pointer
-            const off = view.getUint32(valueOrOffset, littleEndian);
-
-            entries.set(tag, {
-              tag,
-              type,
-              count,
-              value: off,
-              valueOffset: valueOrOffset,
-            });
-          } else {
-            entries.set(tag, {
-              tag,
-              type,
-              count,
-              value: 0,
-              valueOffset: valueOrOffset,
-            });
-          }
+      } else if (type === 3 || type === 4) {
+        const componentSize = type === 3 ? 2 : 4;
+        if (inlineValueBytes <= 4) {
+          valueOffsetAbsolute = valueOrOffset;
         } else {
-          entries.set(tag, {
-            tag,
-            type,
-            count,
-            value: 0,
-            valueOffset: valueOrOffset,
-          });
+          const off = view.getUint32(valueOrOffset, littleEndian);
+          valueOffsetAbsolute = tiffStartOffset + off;
         }
+
+        const values: number[] = [];
+        for (let k = 0; k < count; k++) {
+          const itemOffset = valueOffsetAbsolute + k * componentSize;
+          values.push(
+            type === 3
+              ? view.getUint16(itemOffset, littleEndian)
+              : view.getUint32(itemOffset, littleEndian)
+          );
+        }
+
+        const value = count === 1 ? values[0] : values;
+
+        entries.set(tag, {
+          tag,
+          type,
+          count,
+          value,
+          valueOffset:
+            tag === TAGS.ExifIFDPointer || tag === TAGS.GPSInfoIFDPointer
+              ? valueOrOffset
+              : valueOffsetAbsolute,
+        });
+      } else {
+        entries.set(tag, {
+          tag,
+          type,
+          count,
+          value: 0,
+          valueOffset: valueOrOffset,
+        });
       }
       entryPtr += 12;
     }
