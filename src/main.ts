@@ -71,11 +71,21 @@ type LoadedFile = {
   previewUrl: string;
   gpsMap?: L.Map | null;
   gpsMarker?: L.Marker | null;
+  gpsTileLayer?: L.TileLayer | null;
   elements?: {
     container: HTMLDivElement;
     form: HTMLFormElement;
     gpsEditor: HTMLDivElement;
+    gpsMapChrome: HTMLDivElement;
+    gpsSearchRow: HTMLDivElement;
+    gpsSearchInput: HTMLInputElement;
+    gpsSearchButton: HTMLButtonElement;
+    gpsFullscreenButton: HTMLButtonElement;
+    gpsSearchStatus: HTMLDivElement;
     gpsMapEl: HTMLDivElement;
+    gpsMapOverlay: HTMLDivElement;
+    gpsMapOverlayText: HTMLDivElement;
+    gpsMapRefreshButton: HTMLButtonElement;
     gpsHint: HTMLDivElement;
     xmpPanel: HTMLDivElement;
     syncButton: HTMLButtonElement;
@@ -106,6 +116,13 @@ type XMPMetadata = {
   instanceId?: string;
   originalDocumentId?: string;
   history: XMPHistoryItem[];
+};
+
+type GeocodeCacheEntry = {
+  lat: number;
+  lon: number;
+  label: string;
+  cachedAt: number;
 };
 
 // EXIF tag numbers we care about
@@ -144,6 +161,12 @@ const TAGS = {
 // State
 let activeDateTimePicker: DateTimePickerState | null = null;
 let loadedFiles: LoadedFile[] = [];
+let internetReachable =
+  typeof navigator === "undefined" ? true : navigator.onLine;
+
+const GEOCODE_CACHE_KEY = "exif-editor:geocode-cache:v1";
+const GEOCODE_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+const GEOCODE_CACHE_MAX_ENTRIES = 100;
 
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: markerIcon2xUrl,
@@ -174,7 +197,9 @@ const imageModal = document.getElementById("imageModal") as HTMLDivElement;
 const imageModalBackdrop = document.getElementById(
   "imageModalBackdrop"
 ) as HTMLDivElement;
-const modalPreview = document.getElementById("modalPreview") as HTMLImageElement;
+const modalPreview = document.getElementById(
+  "modalPreview"
+) as HTMLImageElement;
 const fileListEl = document.getElementById("fileList") as HTMLDivElement;
 const status = document.getElementById("status") as HTMLDivElement;
 const downloadAllButton = document.getElementById(
@@ -239,6 +264,18 @@ document.addEventListener("keydown", (event) => {
     closeDateTimePicker(true);
   }
 });
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") {
+    return;
+  }
+
+  const fullscreenFile = loadedFiles.find((file) =>
+    file.elements?.gpsEditor.classList.contains("is-fullscreen")
+  );
+  if (fullscreenFile) {
+    setGpsFullscreen(fullscreenFile, false);
+  }
+});
 window.addEventListener("resize", () => {
   if (activeDateTimePicker) {
     positionDateTimePickerPopup(activeDateTimePicker);
@@ -253,10 +290,389 @@ window.addEventListener(
   },
   true
 );
+window.addEventListener("online", () => {
+  void refreshInternetConnectivity({ announce: true });
+});
+window.addEventListener("offline", () => {
+  internetReachable = false;
+  loadedFiles.forEach((file) => updateGpsMapAvailability(file));
+  status.textContent =
+    "No internet connection detected. GPS maps are disabled.";
+});
 
 function getFileExtension(name: string) {
   const match = name.match(/(\.[^.]+)$/);
   return match ? match[1] : ".jpg";
+}
+
+function hasApplicableXmpData(metadata: XMPMetadata | null | undefined) {
+  if (!metadata) {
+    return false;
+  }
+
+  return Boolean(
+    metadata.toolkit ||
+      metadata.modifyDate ||
+      metadata.metadataDate ||
+      metadata.creatorTool ||
+      metadata.documentId ||
+      metadata.instanceId ||
+      metadata.originalDocumentId ||
+      metadata.history.length
+  );
+}
+
+function setMapInteractionsEnabled(map: L.Map, enabled: boolean) {
+  const tapHandler = (
+    map as L.Map & {
+      tap?: { enable(): void; disable(): void };
+    }
+  ).tap;
+  const handlers = [
+    map.dragging,
+    map.touchZoom,
+    map.doubleClickZoom,
+    map.scrollWheelZoom,
+    map.boxZoom,
+    map.keyboard,
+    tapHandler,
+  ];
+
+  handlers.forEach((handler) => {
+    if (!handler) {
+      return;
+    }
+
+    if (enabled) {
+      handler.enable();
+    } else {
+      handler.disable();
+    }
+  });
+}
+
+async function detectInternetConnectivity() {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return false;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 4000);
+
+  try {
+    await fetch(`https://tile.openstreetmap.org/0/0/0.png?ts=${Date.now()}`, {
+      method: "GET",
+      mode: "no-cors",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    return true;
+  } catch (error) {
+    console.error("Connectivity check failed", error);
+    return false;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+function updateGpsMapAvailability(file: LoadedFile) {
+  const { elements } = file;
+  if (!elements) {
+    return;
+  }
+
+  const offline = !internetReachable;
+  elements.gpsMapOverlay.hidden = !offline;
+  elements.gpsMapRefreshButton.disabled = false;
+  elements.gpsSearchInput.disabled = offline;
+  elements.gpsSearchButton.disabled = offline;
+
+  if (offline) {
+    elements.gpsMapOverlayText.textContent =
+      "Map is unavailable while offline. Reconnect, then refresh the map.";
+    elements.gpsSearchStatus.textContent = elements.gpsSearchStatus.textContent
+      ? elements.gpsSearchStatus.textContent
+      : "Address lookup requires an internet connection.";
+    if (file.gpsMap) {
+      setMapInteractionsEnabled(file.gpsMap, false);
+    }
+    return;
+  }
+
+  elements.gpsSearchStatus.textContent = "";
+  if (file.gpsMap) {
+    setMapInteractionsEnabled(file.gpsMap, true);
+    file.gpsMap.invalidateSize();
+    file.gpsTileLayer?.redraw();
+  }
+}
+
+function setGpsFullscreen(file: LoadedFile, expanded: boolean) {
+  const { elements } = file;
+  if (!elements) {
+    return;
+  }
+
+  elements.gpsEditor.classList.toggle("is-fullscreen", expanded);
+  elements.gpsFullscreenButton.setAttribute(
+    "aria-label",
+    expanded ? "Exit fullscreen map" : "Open fullscreen map"
+  );
+  elements.gpsFullscreenButton.setAttribute(
+    "aria-pressed",
+    expanded ? "true" : "false"
+  );
+  elements.gpsFullscreenButton.textContent = expanded
+    ? "Exit fullscreen"
+    : "Fullscreen";
+  document.body.classList.toggle("map-fullscreen-open", expanded);
+
+  if (!expanded) {
+    elements.gpsSearchInput.blur();
+  }
+
+  window.setTimeout(() => {
+    file.gpsMap?.invalidateSize();
+  }, 0);
+}
+
+async function refreshInternetConnectivity(options?: { announce?: boolean }) {
+  const reachable = await detectInternetConnectivity();
+  const previous = internetReachable;
+  internetReachable = reachable;
+
+  loadedFiles.forEach((file) => updateGpsMapAvailability(file));
+
+  if (options?.announce && previous !== reachable) {
+    status.textContent = reachable
+      ? "Internet connection restored. GPS maps are available again."
+      : "No internet connection detected. GPS maps are disabled.";
+  }
+
+  return reachable;
+}
+
+function getGpsCoordinateControls(file: LoadedFile) {
+  if (!file.elements) {
+    return null;
+  }
+
+  const latitudeFieldIndex = file.parsedFields.findIndex(
+    (field) => field.name === "GPSLatitude"
+  );
+  const longitudeFieldIndex = file.parsedFields.findIndex(
+    (field) => field.name === "GPSLongitude"
+  );
+
+  if (latitudeFieldIndex === -1 || longitudeFieldIndex === -1) {
+    return null;
+  }
+
+  const latitudeInput = file.elements.form.querySelector(
+    `[data-idx="${latitudeFieldIndex}"]`
+  ) as HTMLInputElement | null;
+  const longitudeInput = file.elements.form.querySelector(
+    `[data-idx="${longitudeFieldIndex}"]`
+  ) as HTMLInputElement | null;
+
+  if (!latitudeInput || !longitudeInput) {
+    return null;
+  }
+
+  return { latitudeInput, longitudeInput };
+}
+
+function ensureGpsMap(file: LoadedFile, lat: number, lon: number) {
+  const { elements } = file;
+  if (!elements || !internetReachable) {
+    return;
+  }
+
+  if (!file.gpsMap) {
+    file.gpsMap = L.map(elements.gpsMapEl).setView([lat, lon], 13);
+    file.gpsTileLayer = L.tileLayer(
+      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      {
+        attribution: "&copy; OpenStreetMap contributors",
+      }
+    ).addTo(file.gpsMap);
+    file.gpsMarker = L.marker([lat, lon], { draggable: true }).addTo(
+      file.gpsMap
+    );
+    file.gpsMarker.on("dragend", () => {
+      const markerLatLng = file.gpsMarker?.getLatLng();
+      const controls = getGpsCoordinateControls(file);
+      if (!markerLatLng || !controls) {
+        return;
+      }
+      controls.latitudeInput.value = markerLatLng.lat.toFixed(6);
+      controls.longitudeInput.value = markerLatLng.lng.toFixed(6);
+    });
+  } else {
+    file.gpsMap.invalidateSize();
+    file.gpsMap.setView([lat, lon]);
+    file.gpsMarker?.setLatLng([lat, lon]);
+    file.gpsTileLayer?.redraw();
+  }
+
+  setMapInteractionsEnabled(file.gpsMap, internetReachable);
+}
+
+function normalizeGeocodeQuery(address: string) {
+  return address.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function readGeocodeCache() {
+  if (typeof localStorage === "undefined") {
+    return {} as Record<string, GeocodeCacheEntry>;
+  }
+
+  try {
+    const raw = localStorage.getItem(GEOCODE_CACHE_KEY);
+    if (!raw) {
+      return {} as Record<string, GeocodeCacheEntry>;
+    }
+
+    return JSON.parse(raw) as Record<string, GeocodeCacheEntry>;
+  } catch (error) {
+    console.error("Failed to read geocode cache", error);
+    return {} as Record<string, GeocodeCacheEntry>;
+  }
+}
+
+function writeGeocodeCache(cache: Record<string, GeocodeCacheEntry>) {
+  if (typeof localStorage === "undefined") {
+    return;
+  }
+
+  try {
+    const entries = Object.entries(cache)
+      .sort(([, a], [, b]) => b.cachedAt - a.cachedAt)
+      .slice(0, GEOCODE_CACHE_MAX_ENTRIES);
+    localStorage.setItem(
+      GEOCODE_CACHE_KEY,
+      JSON.stringify(Object.fromEntries(entries))
+    );
+  } catch (error) {
+    console.error("Failed to write geocode cache", error);
+  }
+}
+
+function getCachedGeocode(address: string) {
+  const normalized = normalizeGeocodeQuery(address);
+  const cache = readGeocodeCache();
+  const cached = cache[normalized];
+
+  if (!cached) {
+    return null;
+  }
+
+  if (Date.now() - cached.cachedAt > GEOCODE_CACHE_TTL_MS) {
+    delete cache[normalized];
+    writeGeocodeCache(cache);
+    return null;
+  }
+
+  return cached;
+}
+
+function setCachedGeocode(
+  address: string,
+  value: Omit<GeocodeCacheEntry, "cachedAt">
+) {
+  const normalized = normalizeGeocodeQuery(address);
+  const cache = readGeocodeCache();
+  cache[normalized] = {
+    ...value,
+    cachedAt: Date.now(),
+  };
+  writeGeocodeCache(cache);
+}
+
+async function geocodeAddress(address: string) {
+  const cached = getCachedGeocode(address);
+  if (cached) {
+    return cached;
+  }
+
+  const response = await fetch(
+    `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(
+      address
+    )}`,
+    {
+      headers: {
+        Accept: "application/json",
+      },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Geocoding failed with status ${response.status}`);
+  }
+
+  const results = (await response.json()) as Array<{
+    lat: string;
+    lon: string;
+    display_name?: string;
+  }>;
+
+  if (!results.length) {
+    return null;
+  }
+
+  const result = {
+    lat: Number(results[0].lat),
+    lon: Number(results[0].lon),
+    label: results[0].display_name ?? address,
+  };
+
+  setCachedGeocode(address, result);
+  return result;
+}
+
+async function handleGpsAddressSearch(file: LoadedFile) {
+  const { elements } = file;
+  const controls = getGpsCoordinateControls(file);
+  if (!elements || !controls) {
+    return;
+  }
+
+  const address = elements.gpsSearchInput.value.trim();
+  if (!address) {
+    elements.gpsSearchStatus.textContent =
+      "Enter an address to position the map.";
+    return;
+  }
+
+  elements.gpsSearchStatus.textContent = "Checking connection...";
+  const reachable = await refreshInternetConnectivity();
+  if (!reachable) {
+    elements.gpsSearchStatus.textContent =
+      "Address lookup is unavailable while offline.";
+    return;
+  }
+
+  elements.gpsSearchButton.disabled = true;
+  elements.gpsSearchStatus.textContent = "Searching address...";
+
+  try {
+    const result = await geocodeAddress(address);
+    if (!result || Number.isNaN(result.lat) || Number.isNaN(result.lon)) {
+      elements.gpsSearchStatus.textContent = "No matching address found.";
+      return;
+    }
+
+    controls.latitudeInput.value = result.lat.toFixed(6);
+    controls.longitudeInput.value = result.lon.toFixed(6);
+    ensureGpsMap(file, result.lat, result.lon);
+    elements.gpsSearchStatus.textContent = `Mapped: ${result.label}`;
+  } catch (error) {
+    console.error("Address lookup failed", error);
+    elements.gpsSearchStatus.textContent =
+      "Address lookup failed. Check your connection and try again.";
+  } finally {
+    elements.gpsSearchButton.disabled = !internetReachable;
+  }
 }
 
 function sanitizeFilename(name: string, fallbackName: string) {
@@ -314,8 +730,9 @@ function getXmpSegmentRanges(arrayBuffer: ArrayBuffer) {
     if (
       marker === TAGS.APP1_MARKER &&
       payloadStart + xmpHeader.length <= bytes.length &&
-      decoder.decode(bytes.subarray(payloadStart, payloadStart + xmpHeader.length)) ===
-        xmpHeader
+      decoder.decode(
+        bytes.subarray(payloadStart, payloadStart + xmpHeader.length)
+      ) === xmpHeader
     ) {
       ranges.push({ start: markerOffset, end: segmentEnd });
     }
@@ -421,7 +838,10 @@ function isIOSDevice() {
 }
 
 function canShareFiles(file: LoadedFile) {
-  if (typeof navigator === "undefined" || typeof navigator.share !== "function") {
+  if (
+    typeof navigator === "undefined" ||
+    typeof navigator.share !== "function"
+  ) {
     return false;
   }
 
@@ -572,7 +992,9 @@ async function downloadAllLoadedFiles() {
     return;
   }
 
-  const names = getUniqueFilenames(loadedFiles.map((file) => getDownloadFilename(file)));
+  const names = getUniqueFilenames(
+    loadedFiles.map((file) => getDownloadFilename(file))
+  );
   const entries = await Promise.all(
     loadedFiles.map(async (file, index) => {
       const data = new Uint8Array(await getEditedBlob(file).arrayBuffer());
@@ -592,9 +1014,13 @@ async function shareLoadedFile(fileId: string) {
   }
 
   try {
-    const sharedFile = new File([getEditedBlob(file)], getDownloadFilename(file), {
-      type: "image/jpeg",
-    });
+    const sharedFile = new File(
+      [getEditedBlob(file)],
+      getDownloadFilename(file),
+      {
+        type: "image/jpeg",
+      }
+    );
     await navigator.share({
       files: [sharedFile],
       title: getDownloadFilename(file),
@@ -645,10 +1071,13 @@ function parseXmpMetadata(arrayBuffer: ArrayBuffer): XMPMetadata | null {
     if (
       marker === TAGS.APP1_MARKER &&
       payloadEnd <= bytes.length &&
-      decoder.decode(bytes.subarray(payloadStart, payloadStart + xmpHeader.length)) ===
-        xmpHeader
+      decoder.decode(
+        bytes.subarray(payloadStart, payloadStart + xmpHeader.length)
+      ) === xmpHeader
     ) {
-      const xml = decoder.decode(bytes.subarray(payloadStart + xmpHeader.length, payloadEnd));
+      const xml = decoder.decode(
+        bytes.subarray(payloadStart + xmpHeader.length, payloadEnd)
+      );
       const doc = new DOMParser().parseFromString(xml, "application/xml");
 
       if (doc.querySelector("parsererror")) {
@@ -669,7 +1098,10 @@ function parseXmpMetadata(arrayBuffer: ArrayBuffer): XMPMetadata | null {
           softwareAgent: getAttrByLocalName(item, "softwareAgent"),
           when: getAttrByLocalName(item, "when"),
         }))
-        .filter((entry) => entry.action || entry.changed || entry.softwareAgent || entry.when);
+        .filter(
+          (entry) =>
+            entry.action || entry.changed || entry.softwareAgent || entry.when
+        );
 
       const metadata: XMPMetadata = {
         toolkit: getFirstAttribute("xmptk"),
@@ -804,7 +1236,11 @@ function removeLoadedFile(fileId: string) {
 
   const [removed] = loadedFiles.splice(fileIndex, 1);
   URL.revokeObjectURL(removed.previewUrl);
+  if (removed.elements?.gpsEditor.classList.contains("is-fullscreen")) {
+    document.body.classList.remove("map-fullscreen-open");
+  }
   removed.gpsMap?.remove();
+  removed.gpsTileLayer = null;
   removed.elements?.container.remove();
   updateStatus();
 
@@ -968,14 +1404,7 @@ function getGpsUtcDate(dateStr: string, timeArr: number[]) {
   const [h, m, s] = timeArr;
 
   return new Date(
-    Date.UTC(
-      parseInt(year),
-      parseInt(month) - 1,
-      parseInt(day),
-      h,
-      m,
-      s || 0
-    )
+    Date.UTC(parseInt(year), parseInt(month) - 1, parseInt(day), h, m, s || 0)
   );
 }
 
@@ -1192,12 +1621,12 @@ function getInlineValueByteLength(type: number, count: number) {
     type === 1 || type === 2 || type === 6 || type === 7
       ? 1
       : type === 3 || type === 8
-        ? 2
-        : type === 4 || type === 9 || type === 11
-          ? 4
-          : type === 5 || type === 10 || type === 12
-            ? 8
-            : 0;
+      ? 2
+      : type === 4 || type === 9 || type === 11
+      ? 4
+      : type === 5 || type === 10 || type === 12
+      ? 8
+      : 0;
 
   return bytesPerComponent * count;
 }
@@ -1268,10 +1697,10 @@ function commitVisibleDateTimeSegments(state: DateTimePickerState) {
     rawMeridiem === "P" || rawMeridiem === "PM"
       ? "PM"
       : rawMeridiem === "A" || rawMeridiem === "AM"
-        ? "AM"
-        : state.selectedDate.getHours() >= 12
-          ? "PM"
-          : "AM";
+      ? "AM"
+      : state.selectedDate.getHours() >= 12
+      ? "PM"
+      : "AM";
 
   let hour24 = hour12 % 12;
   if (meridiem === "PM") {
@@ -1293,14 +1722,7 @@ function commitVisibleDateTimeSegments(state: DateTimePickerState) {
 
 function adjustVisibleSegmentValue(
   state: DateTimePickerState,
-  segment:
-    | "month"
-    | "day"
-    | "year"
-    | "hour"
-    | "minute"
-    | "second"
-    | "meridiem",
+  segment: "month" | "day" | "year" | "hour" | "minute" | "second" | "meridiem",
   delta: number
 ) {
   const next = new Date(state.selectedDate);
@@ -1337,8 +1759,14 @@ function syncDateTimePickerValue(state: DateTimePickerState) {
   state.monthInput.value = (state.selectedDate.getMonth() + 1)
     .toString()
     .padStart(2, "0");
-  state.dayInput.value = state.selectedDate.getDate().toString().padStart(2, "0");
-  state.yearInput.value = state.selectedDate.getFullYear().toString().padStart(4, "0");
+  state.dayInput.value = state.selectedDate
+    .getDate()
+    .toString()
+    .padStart(2, "0");
+  state.yearInput.value = state.selectedDate
+    .getFullYear()
+    .toString()
+    .padStart(4, "0");
   const hours24 = state.selectedDate.getHours();
   const hours12 = hours24 % 12 || 12;
   state.visibleHourInput.value = hours12.toString().padStart(2, "0");
@@ -1382,7 +1810,9 @@ function focusSelectedDay(state: DateTimePickerState) {
 
 function renderDateTimePicker(state: DateTimePickerState) {
   syncDateTimePickerValue(state);
-  state.monthLabel.textContent = `${MONTH_NAMES[state.viewMonth]} ${state.viewYear}`;
+  state.monthLabel.textContent = `${MONTH_NAMES[state.viewMonth]} ${
+    state.viewYear
+  }`;
   state.dayGrid.innerHTML = "";
 
   const monthStart = new Date(state.viewYear, state.viewMonth, 1);
@@ -1534,10 +1964,17 @@ function positionDateTimePickerPopup(state: DateTimePickerState) {
 
   state.popup.style.left = `${left}px`;
   state.popup.style.top = `${top}px`;
-  state.popup.style.maxHeight = `${Math.max(220, viewportHeight - top - padding)}px`;
+  state.popup.style.maxHeight = `${Math.max(
+    220,
+    viewportHeight - top - padding
+  )}px`;
 }
 
-function createDateTimePicker(idx: number, labelId: string, fieldData: EXIFField) {
+function createDateTimePicker(
+  idx: number,
+  labelId: string,
+  fieldData: EXIFField
+) {
   const initialValue = toInputDateTime(fieldData.value as string);
   const initialDate = parseInputDateTimeValue(initialValue) ?? new Date();
   const root = document.createElement("div");
@@ -1831,13 +2268,7 @@ function createDateTimePicker(idx: number, labelId: string, fieldData: EXIFField
     input: HTMLInputElement,
     maxLength: number,
     index: number,
-    segment:
-      | "month"
-      | "day"
-      | "year"
-      | "hour"
-      | "minute"
-      | "second"
+    segment: "month" | "day" | "year" | "hour" | "minute" | "second"
   ) {
     input.addEventListener("focus", () => input.select());
     input.addEventListener("input", () => {
@@ -1879,7 +2310,10 @@ function createDateTimePicker(idx: number, labelId: string, fieldData: EXIFField
         input.select();
         return;
       }
-      if (event.key === "ArrowDown" || (event.altKey && event.key === "ArrowDown")) {
+      if (
+        event.key === "ArrowDown" ||
+        (event.altKey && event.key === "ArrowDown")
+      ) {
         event.preventDefault();
         commitVisibleDateTimeSegments(state);
         openDateTimePicker(state);
@@ -1900,7 +2334,9 @@ function createDateTimePicker(idx: number, labelId: string, fieldData: EXIFField
   wireVisibleSegment(visibleMinuteInput, 2, 4, "minute");
   wireVisibleSegment(visibleSecondInput, 2, 5, "second");
 
-  visibleMeridiemInput.addEventListener("focus", () => visibleMeridiemInput.select());
+  visibleMeridiemInput.addEventListener("focus", () =>
+    visibleMeridiemInput.select()
+  );
   visibleMeridiemInput.addEventListener("input", () => {
     const normalized = visibleMeridiemInput.value
       .replace(/[^apm]/gi, "")
@@ -2050,6 +2486,7 @@ function setupGpsEditor(file: LoadedFile) {
     file.gpsMap?.remove();
     file.gpsMap = null;
     file.gpsMarker = null;
+    file.gpsTileLayer = null;
     return;
   }
 
@@ -2073,14 +2510,16 @@ function setupGpsEditor(file: LoadedFile) {
     file.gpsMap?.remove();
     file.gpsMap = null;
     file.gpsMarker = null;
+    file.gpsTileLayer = null;
     return;
   }
 
   elements.gpsEditor.style.display = "flex";
-  elements.gpsHint.textContent =
-    altitudeInput !== null
-      ? "Drag the marker or edit the GPS fields directly. Altitude stays editable below."
-      : "Drag the marker or edit the GPS fields directly.";
+  elements.gpsHint.textContent = internetReachable
+    ? altitudeInput !== null
+      ? "Search for an address, drag the marker, or edit the GPS fields directly. Altitude stays editable below."
+      : "Search for an address, drag the marker, or edit the GPS fields directly."
+    : "Reconnect to load the map. You can still edit the GPS fields directly.";
 
   const updateMarkerPosition = () => {
     const lat = Number(latitudeInput.value);
@@ -2089,30 +2528,13 @@ function setupGpsEditor(file: LoadedFile) {
       return;
     }
 
-    if (!file.gpsMap) {
-      file.gpsMap = L.map(elements.gpsMapEl).setView([lat, lon], 13);
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "&copy; OpenStreetMap contributors",
-      }).addTo(file.gpsMap);
-      file.gpsMarker = L.marker([lat, lon], { draggable: true }).addTo(file.gpsMap);
-      file.gpsMarker.on("dragend", () => {
-        const markerLatLng = file.gpsMarker?.getLatLng();
-        if (!markerLatLng) {
-          return;
-        }
-        latitudeInput.value = markerLatLng.lat.toFixed(6);
-        longitudeInput.value = markerLatLng.lng.toFixed(6);
-      });
-    } else {
-      file.gpsMap.invalidateSize();
-      file.gpsMap.setView([lat, lon]);
-      file.gpsMarker?.setLatLng([lat, lon]);
-    }
+    ensureGpsMap(file, lat, lon);
   };
 
   latitudeInput.addEventListener("input", updateMarkerPosition);
   longitudeInput.addEventListener("input", updateMarkerPosition);
 
+  updateGpsMapAvailability(file);
   updateMarkerPosition();
 }
 
@@ -2269,7 +2691,9 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
           }
 
           if (!localTime) {
-            const dateMatch = correspondingDate.match(/(\d{4}):(\d{2}):(\d{2})/);
+            const dateMatch = correspondingDate.match(
+              /(\d{4}):(\d{2}):(\d{2})/
+            );
             if (dateMatch) {
               const [_, year, month, day] = dateMatch;
               const utcDate = new Date(
@@ -2437,17 +2861,19 @@ function syncDateTimeFieldsToOriginal(file: LoadedFile) {
   applyFormToWorkingBuffer(file);
   renderFields(file, file.elements.form);
   updateSyncButtonVisibility(file);
-  status.textContent = `Synced EXIF timestamps for ${getDownloadFilename(file)}.`;
+  status.textContent = `Synced EXIF timestamps for ${getDownloadFilename(
+    file
+  )}.`;
 }
 
 function renderXmpPanel(file: LoadedFile, panel: HTMLDivElement) {
   panel.innerHTML = "";
 
-  const metadata = file.xmpMetadata;
-  if (!metadata) {
+  if (!hasApplicableXmpData(file.xmpMetadata)) {
     panel.hidden = true;
     return;
   }
+  const metadata = file.xmpMetadata!;
 
   const latestHistory = metadata.history.at(-1);
   const rows: Array<[string, string | undefined]> = [
@@ -2466,7 +2892,8 @@ function renderXmpPanel(file: LoadedFile, panel: HTMLDivElement) {
   heading.textContent = "XMP Metadata";
   headingRow.appendChild(heading);
 
-  const clearButton = file.elements?.clearXmpButton ?? document.createElement("button");
+  const clearButton =
+    file.elements?.clearXmpButton ?? document.createElement("button");
   clearButton.type = "button";
   clearButton.className = "warning";
   clearButton.textContent = "Clear XMP";
@@ -2529,7 +2956,9 @@ function clearXmpMetadata(file: LoadedFile) {
   file.xmpRemoved = true;
   file.xmpMetadata = null;
   renderXmpPanel(file, file.elements.xmpPanel);
-  status.textContent = `Removed XMP metadata from ${getDownloadFilename(file)} for export.`;
+  status.textContent = `Removed XMP metadata from ${getDownloadFilename(
+    file
+  )} for export.`;
 }
 
 function appendFileEditor(file: LoadedFile) {
@@ -2552,7 +2981,16 @@ function appendFileEditor(file: LoadedFile) {
   const editorPanel = document.createElement("div");
   const form = document.createElement("form");
   const gpsEditorEl = document.createElement("div");
+  const gpsMapChrome = document.createElement("div");
+  const gpsSearchRow = document.createElement("div");
+  const gpsSearchInput = document.createElement("input");
+  const gpsSearchButton = document.createElement("button");
+  const gpsFullscreenButton = document.createElement("button");
+  const gpsSearchStatus = document.createElement("div");
   const gpsMapElement = document.createElement("div");
+  const gpsMapOverlay = document.createElement("div");
+  const gpsMapOverlayText = document.createElement("div");
+  const gpsMapRefreshButton = document.createElement("button");
   const gpsHintEl = document.createElement("div");
   const xmpPanel = document.createElement("div");
   const actions = document.createElement("div");
@@ -2569,7 +3007,10 @@ function appendFileEditor(file: LoadedFile) {
   previewPanel.className = "preview-panel";
   previewButton.className = "preview-button";
   previewButton.type = "button";
-  previewButton.setAttribute("aria-label", `Open larger image preview for ${file.filename}`);
+  previewButton.setAttribute(
+    "aria-label",
+    `Open larger image preview for ${file.filename}`
+  );
   previewImg.className = "preview";
   previewImg.alt = file.filename;
   previewImg.src = file.previewUrl;
@@ -2604,7 +3045,28 @@ function appendFileEditor(file: LoadedFile) {
   form.className = "file-fields";
   gpsEditorEl.className = "gps-editor";
   gpsEditorEl.style.display = "none";
+  gpsMapChrome.className = "gps-map-chrome";
+  gpsSearchRow.className = "gps-search-row";
+  gpsSearchInput.type = "text";
+  gpsSearchInput.className = "gps-search-input";
+  gpsSearchInput.placeholder = "Enter an address or place";
+  gpsSearchInput.setAttribute("aria-label", "Search address for GPS map");
+  gpsSearchButton.type = "button";
+  gpsSearchButton.className = "ghost";
+  gpsSearchButton.textContent = "Find";
+  gpsFullscreenButton.type = "button";
+  gpsFullscreenButton.className = "ghost gps-fullscreen-button";
+  gpsFullscreenButton.textContent = "Fullscreen";
+  gpsFullscreenButton.setAttribute("aria-label", "Open fullscreen map");
+  gpsFullscreenButton.setAttribute("aria-pressed", "false");
+  gpsSearchStatus.className = "muted gps-search-status";
   gpsMapElement.className = "gps-map";
+  gpsMapOverlay.className = "gps-map-overlay";
+  gpsMapOverlay.hidden = true;
+  gpsMapOverlayText.className = "gps-map-overlay-text";
+  gpsMapRefreshButton.type = "button";
+  gpsMapRefreshButton.className = "primary";
+  gpsMapRefreshButton.textContent = "Refresh map";
   gpsHintEl.className = "muted";
   xmpPanel.className = "metadata-panel";
   xmpPanel.hidden = true;
@@ -2616,7 +3078,7 @@ function appendFileEditor(file: LoadedFile) {
   clearXmpButton.type = "button";
   clearXmpButton.className = "warning";
   clearXmpButton.textContent = "Clear XMP";
-  clearXmpButton.hidden = !file.xmpMetadata;
+  clearXmpButton.hidden = !hasApplicableXmpData(file.xmpMetadata);
   downloadButton.type = "button";
   downloadButton.className = "primary";
   downloadButton.textContent = "Download";
@@ -2624,7 +3086,9 @@ function appendFileEditor(file: LoadedFile) {
   clearButton.className = "ghost";
   clearButton.textContent = "Clear";
 
-  previewButton.addEventListener("click", () => openImageModal(file.previewUrl));
+  previewButton.addEventListener("click", () =>
+    openImageModal(file.previewUrl)
+  );
   editFilenameButton.addEventListener("click", () => beginFilenameEdit(file));
   filenameInput.addEventListener("input", () => {
     file.filename = filenameInput.value;
@@ -2642,8 +3106,49 @@ function appendFileEditor(file: LoadedFile) {
   });
   moveUpButton.addEventListener("click", () => moveLoadedFile(file.id, -1));
   moveDownButton.addEventListener("click", () => moveLoadedFile(file.id, 1));
-  syncButton.addEventListener("click", () => syncDateTimeFieldsToOriginal(file));
+  syncButton.addEventListener("click", () =>
+    syncDateTimeFieldsToOriginal(file)
+  );
   clearXmpButton.addEventListener("click", () => clearXmpMetadata(file));
+  gpsSearchButton.addEventListener("click", () => {
+    void handleGpsAddressSearch(file);
+  });
+  gpsFullscreenButton.addEventListener("click", () => {
+    const expanded = !gpsEditorEl.classList.contains("is-fullscreen");
+    setGpsFullscreen(file, expanded);
+  });
+  gpsSearchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void handleGpsAddressSearch(file);
+    }
+    if (
+      event.key === "Escape" &&
+      gpsEditorEl.classList.contains("is-fullscreen")
+    ) {
+      event.preventDefault();
+      setGpsFullscreen(file, false);
+    }
+  });
+  gpsMapRefreshButton.addEventListener("click", () => {
+    gpsMapRefreshButton.disabled = true;
+    gpsMapOverlayText.textContent = "Checking connection...";
+    void refreshInternetConnectivity({ announce: true }).then((reachable) => {
+      updateGpsMapAvailability(file);
+      const controls = getGpsCoordinateControls(file);
+      if (reachable && controls) {
+        const lat = Number(controls.latitudeInput.value);
+        const lon = Number(controls.longitudeInput.value);
+        if (!Number.isNaN(lat) && !Number.isNaN(lon)) {
+          ensureGpsMap(file, lat, lon);
+        }
+      } else if (!reachable) {
+        gpsMapOverlayText.textContent =
+          "Map is unavailable while offline. Reconnect, then refresh the map.";
+      }
+      gpsMapRefreshButton.disabled = false;
+    });
+  });
   downloadButton.addEventListener("click", () => downloadLoadedFile(file.id));
   clearButton.addEventListener("click", () => removeLoadedFile(file.id));
 
@@ -2664,7 +3169,16 @@ function appendFileEditor(file: LoadedFile) {
     container,
     form,
     gpsEditor: gpsEditorEl,
+    gpsMapChrome,
+    gpsSearchRow,
+    gpsSearchInput,
+    gpsSearchButton,
+    gpsFullscreenButton,
+    gpsSearchStatus,
     gpsMapEl: gpsMapElement,
+    gpsMapOverlay,
+    gpsMapOverlayText,
+    gpsMapRefreshButton,
     gpsHint: gpsHintEl,
     xmpPanel,
     syncButton,
@@ -2678,7 +3192,16 @@ function appendFileEditor(file: LoadedFile) {
     moveDownButton,
   };
 
+  gpsSearchRow.appendChild(gpsSearchInput);
+  gpsSearchRow.appendChild(gpsSearchButton);
+  gpsMapChrome.appendChild(gpsSearchRow);
+  gpsMapChrome.appendChild(gpsFullscreenButton);
+  gpsMapOverlay.appendChild(gpsMapOverlayText);
+  gpsMapOverlay.appendChild(gpsMapRefreshButton);
+  gpsMapElement.appendChild(gpsMapChrome);
+  gpsMapElement.appendChild(gpsMapOverlay);
   gpsEditorEl.appendChild(gpsMapElement);
+  gpsEditorEl.appendChild(gpsSearchStatus);
   gpsEditorEl.appendChild(gpsHintEl);
   editorPanel.appendChild(form);
   editorPanel.appendChild(gpsEditorEl);
@@ -2873,11 +3396,7 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
               localSeconds,
               photoTimezoneOffset
             );
-            newVal = [
-              utcParts.hours,
-              utcParts.minutes,
-              utcParts.seconds,
-            ];
+            newVal = [utcParts.hours, utcParts.minutes, utcParts.seconds];
           }
         }
       }
@@ -2893,8 +3412,8 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
             ? "N"
             : "S"
           : decimal >= 0
-            ? "E"
-            : "W";
+          ? "E"
+          : "W";
       const [degrees, minutes, seconds] = dmsFromDecimal(decimal);
       const secondsScaled = Math.round(seconds * 1000000);
 
@@ -3034,7 +3553,6 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
       }
     }
   });
-
 }
 
 // ---------- EXIF parsing (custom, minimal, only to find & edit ASCII date/time tags) ----------
@@ -3103,14 +3621,14 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
 
   const fortyTwo = new DataView(view.buffer, tiffStartOffset + 2, 2);
 
-  if (fortyTwo.getUint16(0, false) !== 42) {
+  if (fortyTwo.getUint16(0, littleEndian) !== 42) {
     throw new Error("Invalid TIFF header");
   }
 
   const firstIFDOffsetView = new DataView(view.buffer, tiffStartOffset + 4, 4);
 
   const firstIFDOffset =
-    firstIFDOffsetView.getUint32(0, false) + tiffStartOffset;
+    firstIFDOffsetView.getUint32(0, littleEndian) + tiffStartOffset;
 
   const results: EXIFField[] = [];
 
@@ -3370,23 +3888,18 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
     const gpsAltitude = gpsIFD.entries.get(TAGS.GPSAltitude);
     const gpsDateEntry = gpsIFD.entries.get(TAGS.GPSDateStamp);
     const gpsTimeEntry = gpsIFD.entries.get(TAGS.GPSTimeStamp);
-    const latitudeRef = decodeGpsRef(gpsLatitudeRef?.value as
-      | string
-      | number
-      | number[]
-      | undefined);
-    const longitudeRef = decodeGpsRef(gpsLongitudeRef?.value as
-      | string
-      | number
-      | number[]
-      | undefined);
+    const latitudeRef = decodeGpsRef(
+      gpsLatitudeRef?.value as string | number | number[] | undefined
+    );
+    const longitudeRef = decodeGpsRef(
+      gpsLongitudeRef?.value as string | number | number[] | undefined
+    );
 
-    if (
-      latitudeRef &&
-      gpsLatitude &&
-      Array.isArray(gpsLatitude.value)
-    ) {
-      const latitude = decimalFromDms(gpsLatitude.value as number[], latitudeRef);
+    if (latitudeRef && gpsLatitude && Array.isArray(gpsLatitude.value)) {
+      const latitude = decimalFromDms(
+        gpsLatitude.value as number[],
+        latitudeRef
+      );
       if (latitude !== null) {
         results.push({
           label: "GPS Latitude",
@@ -3403,11 +3916,7 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
       }
     }
 
-    if (
-      longitudeRef &&
-      gpsLongitude &&
-      Array.isArray(gpsLongitude.value)
-    ) {
+    if (longitudeRef && gpsLongitude && Array.isArray(gpsLongitude.value)) {
       const longitude = decimalFromDms(
         gpsLongitude.value as number[],
         longitudeRef
