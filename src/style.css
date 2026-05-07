@@ -290,6 +290,42 @@ form#fields,
   border-radius: 12px;
   background: #f8fafc;
 }
+.dimensions-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+.dimensions-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: end;
+}
+.dimension-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+.dimension-lock {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+}
+.dimension-lock input {
+  width: 16px;
+  height: 16px;
+}
 .metadata-heading-row {
   display: flex;
   align-items: center;

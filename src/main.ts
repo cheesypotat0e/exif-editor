@@ -33,6 +33,11 @@ type EXIFField = {
   _subSeconds?: string;
 };
 
+type ImageDimensions = {
+  width: number;
+  height: number;
+};
+
 type DateTimePickerState = {
   root: HTMLDivElement;
   hiddenInput: HTMLInputElement;
@@ -65,6 +70,7 @@ type LoadedFile = {
   filename: string;
   originalFilename: string;
   workingBuffer: ArrayBuffer;
+  dimensions: ImageDimensions;
   parsedFields: EXIFField[];
   xmpMetadata?: XMPMetadata | null;
   xmpRemoved?: boolean;
@@ -75,6 +81,10 @@ type LoadedFile = {
   elements?: {
     container: HTMLDivElement;
     form: HTMLFormElement;
+    dimensionsPanel: HTMLDivElement;
+    dimensionWidthInput: HTMLInputElement;
+    dimensionHeightInput: HTMLInputElement;
+    dimensionLockInput: HTMLInputElement;
     gpsEditor: HTMLDivElement;
     gpsMapChrome: HTMLDivElement;
     gpsSearchRow: HTMLDivElement;
@@ -137,6 +147,8 @@ const TAGS = {
   GPSLongitude: 0x0004,
   GPSAltitudeRef: 0x0005,
   GPSAltitude: 0x0006,
+  ExifImageWidth: 0xa002,
+  ExifImageHeight: 0xa003,
   DateTimeOriginal: 0x9003, // Exif
   CreateDate: 0x9004, // alias for DateTimeDigitized
   DateTimeDigitized: 0x9004, // Exif
@@ -151,7 +163,10 @@ const TAGS = {
 
   END_OF_IMAGE: 0xffd9,
   VALID_MARKER_PREFIX: 0xff00,
+  APP0: 0xffe0,
   APP1_MARKER: 0xffe1,
+  APP2_MARKER: 0xffe2,
+  START_OF_SCAN: 0xffda,
   EXIF_HEADER: 0x45786966,
   LITTLE_ENDIAN: 0x4949,
   BIG_ENDIAN: 0x4d4d,
@@ -776,11 +791,407 @@ function stripXmpSegments(arrayBuffer: ArrayBuffer) {
   return result.buffer;
 }
 
-function getEditedBlob(file: LoadedFile) {
+function getJpegSegmentEnd(bytes: Uint8Array, offset: number) {
+  if (offset + 4 > bytes.length) {
+    return null;
+  }
+
+  const marker = (bytes[offset] << 8) | bytes[offset + 1];
+  if ((marker & TAGS.VALID_MARKER_PREFIX) !== TAGS.VALID_MARKER_PREFIX) {
+    return null;
+  }
+
+  if (
+    marker === TAGS.END_OF_IMAGE ||
+    marker === TAGS.START_OF_SCAN ||
+    (marker >= 0xffd0 && marker <= 0xffd7)
+  ) {
+    return offset + 2;
+  }
+
+  const segmentLength = (bytes[offset + 2] << 8) | bytes[offset + 3];
+  const end = offset + 2 + segmentLength;
+  return end <= bytes.length ? end : null;
+}
+
+function getJpegMetadataSegments(arrayBuffer: ArrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const segments: Uint8Array[] = [];
+  let offset = 2;
+
+  while (offset + 4 <= bytes.length) {
+    const marker = (bytes[offset] << 8) | bytes[offset + 1];
+    if (marker === TAGS.START_OF_SCAN || marker === TAGS.END_OF_IMAGE) {
+      break;
+    }
+
+    const segmentEnd = getJpegSegmentEnd(bytes, offset);
+    if (segmentEnd === null) {
+      break;
+    }
+
+    if (marker === TAGS.APP1_MARKER || marker === TAGS.APP2_MARKER) {
+      segments.push(bytes.slice(offset, segmentEnd));
+    }
+
+    offset = segmentEnd;
+  }
+
+  return segments;
+}
+
+function getJpegMetadataInsertionOffset(arrayBuffer: ArrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+    return 2;
+  }
+
+  let offset = 2;
+  while (offset + 4 <= bytes.length) {
+    const marker = (bytes[offset] << 8) | bytes[offset + 1];
+    if (marker !== TAGS.APP0) {
+      break;
+    }
+
+    const segmentEnd = getJpegSegmentEnd(bytes, offset);
+    if (segmentEnd === null) {
+      break;
+    }
+    offset = segmentEnd;
+  }
+
+  return offset;
+}
+
+function insertJpegMetadataSegments(
+  jpegBuffer: ArrayBuffer,
+  segments: Uint8Array[]
+) {
+  if (!segments.length) {
+    return jpegBuffer;
+  }
+
+  const bytes = new Uint8Array(jpegBuffer);
+  const insertionOffset = getJpegMetadataInsertionOffset(jpegBuffer);
+  const metadataLength = segments.reduce(
+    (total, segment) => total + segment.length,
+    0
+  );
+  const result = new Uint8Array(bytes.length + metadataLength);
+  let writeOffset = 0;
+
+  result.set(bytes.slice(0, insertionOffset), writeOffset);
+  writeOffset += insertionOffset;
+
+  for (const segment of segments) {
+    result.set(segment, writeOffset);
+    writeOffset += segment.length;
+  }
+
+  result.set(bytes.slice(insertionOffset), writeOffset);
+  return result.buffer;
+}
+
+function getRequestedDimensions(file: LoadedFile): ImageDimensions {
+  const width = Number(file.elements?.dimensionWidthInput.value);
+  const height = Number(file.elements?.dimensionHeightInput.value);
+
+  if (
+    !Number.isInteger(width) ||
+    !Number.isInteger(height) ||
+    width < 1 ||
+    height < 1
+  ) {
+    return file.dimensions;
+  }
+
+  return {
+    width: Math.min(width, 65535),
+    height: Math.min(height, 65535),
+  };
+}
+
+function dimensionsChanged(a: ImageDimensions, b: ImageDimensions) {
+  return a.width !== b.width || a.height !== b.height;
+}
+
+function canvasToJpegBlob(canvas: HTMLCanvasElement, quality = 0.92) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error("Unable to encode resized JPEG"));
+        }
+      },
+      "image/jpeg",
+      quality
+    );
+  });
+}
+
+async function decodeImageBitmap(blob: Blob) {
+  if ("createImageBitmap" in window) {
+    return window.createImageBitmap(blob);
+  }
+
+  const url = URL.createObjectURL(blob);
+  try {
+    const image = new Image();
+    image.decoding = "async";
+    image.src = url;
+    await image.decode();
+    return image;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function resizeJpegBuffer(
+  arrayBuffer: ArrayBuffer,
+  dimensions: ImageDimensions
+) {
+  const sourceBlob = new Blob([arrayBuffer], { type: "image/jpeg" });
+  const image = await decodeImageBitmap(sourceBlob);
+  const canvas = document.createElement("canvas");
+  canvas.width = dimensions.width;
+  canvas.height = dimensions.height;
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas rendering is unavailable");
+  }
+
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+
+  let source: CanvasImageSource = image;
+  let sourceWidth = image.width;
+  let sourceHeight = image.height;
+
+  while (
+    sourceWidth > dimensions.width * 2 ||
+    sourceHeight > dimensions.height * 2
+  ) {
+    const intermediateCanvas = document.createElement("canvas");
+    intermediateCanvas.width = Math.max(
+      dimensions.width,
+      Math.round(sourceWidth / 2)
+    );
+    intermediateCanvas.height = Math.max(
+      dimensions.height,
+      Math.round(sourceHeight / 2)
+    );
+
+    const intermediateContext = intermediateCanvas.getContext("2d");
+    if (!intermediateContext) {
+      throw new Error("Canvas rendering is unavailable");
+    }
+
+    intermediateContext.imageSmoothingEnabled = true;
+    intermediateContext.imageSmoothingQuality = "high";
+    intermediateContext.drawImage(
+      source,
+      0,
+      0,
+      intermediateCanvas.width,
+      intermediateCanvas.height
+    );
+
+    source = intermediateCanvas;
+    sourceWidth = intermediateCanvas.width;
+    sourceHeight = intermediateCanvas.height;
+  }
+
+  context.drawImage(source, 0, 0, dimensions.width, dimensions.height);
+
+  if ("close" in image && typeof image.close === "function") {
+    image.close();
+  }
+
+  const resizedBlob = await canvasToJpegBlob(canvas);
+  return resizedBlob.arrayBuffer();
+}
+
+function parseJpegDimensions(arrayBuffer: ArrayBuffer): ImageDimensions | null {
+  const view = new DataView(arrayBuffer);
+  if (view.byteLength < 4 || view.getUint16(0, false) !== TAGS.JPEG_START) {
+    return null;
+  }
+
+  let offset = 2;
+  while (offset + 4 <= view.byteLength) {
+    const marker = view.getUint16(offset, false);
+    offset += 2;
+
+    if (marker === TAGS.START_OF_SCAN || marker === TAGS.END_OF_IMAGE) {
+      break;
+    }
+
+    if ((marker & TAGS.VALID_MARKER_PREFIX) !== TAGS.VALID_MARKER_PREFIX) {
+      break;
+    }
+
+    const segmentLength = view.getUint16(offset, false);
+    const isStartOfFrame =
+      (marker >= 0xffc0 && marker <= 0xffc3) ||
+      (marker >= 0xffc5 && marker <= 0xffc7) ||
+      (marker >= 0xffc9 && marker <= 0xffcb) ||
+      (marker >= 0xffcd && marker <= 0xffcf);
+
+    if (isStartOfFrame && offset + 7 <= view.byteLength) {
+      return {
+        height: view.getUint16(offset + 3, false),
+        width: view.getUint16(offset + 5, false),
+      };
+    }
+
+    offset += segmentLength;
+  }
+
+  return null;
+}
+
+function updateExifPixelDimensions(
+  arrayBuffer: ArrayBuffer,
+  dimensions: ImageDimensions
+) {
+  const view = new DataView(arrayBuffer);
+  if (view.byteLength < 4 || view.getUint16(0, false) !== TAGS.JPEG_START) {
+    return;
+  }
+
+  let offset = 2;
+  let tiffStartOffset = -1;
+  while (offset + 4 <= view.byteLength) {
+    const marker = view.getUint16(offset, false);
+    offset += 2;
+
+    if (marker === TAGS.START_OF_SCAN || marker === TAGS.END_OF_IMAGE) {
+      break;
+    }
+
+    if ((marker & TAGS.VALID_MARKER_PREFIX) !== TAGS.VALID_MARKER_PREFIX) {
+      break;
+    }
+
+    const segmentLength = view.getUint16(offset, false);
+    if (marker === TAGS.APP1_MARKER) {
+      const potential = offset + 2;
+      if (
+        potential + 6 <= view.byteLength &&
+        view.getUint32(potential, false) === TAGS.EXIF_HEADER &&
+        view.getUint16(potential + 4, false) === 0
+      ) {
+        tiffStartOffset = potential + 6;
+        break;
+      }
+    }
+
+    offset += segmentLength;
+  }
+
+  if (tiffStartOffset === -1 || tiffStartOffset + 8 > view.byteLength) {
+    return;
+  }
+
+  const byteOrder = view.getUint16(tiffStartOffset, false);
+  const littleEndian = byteOrder === TAGS.LITTLE_ENDIAN;
+  if (!littleEndian && byteOrder !== TAGS.BIG_ENDIAN) {
+    return;
+  }
+
+  if (view.getUint16(tiffStartOffset + 2, littleEndian) !== 42) {
+    return;
+  }
+
+  const firstIFDOffset =
+    tiffStartOffset + view.getUint32(tiffStartOffset + 4, littleEndian);
+
+  function getLinkedIFDOffset(ifdOffset: number, pointerTag: number) {
+    if (ifdOffset + 2 > view.byteLength) {
+      return null;
+    }
+
+    const count = view.getUint16(ifdOffset, littleEndian);
+    let entryOffset = ifdOffset + 2;
+    for (let index = 0; index < count; index++) {
+      if (entryOffset + 12 > view.byteLength) {
+        return null;
+      }
+
+      if (view.getUint16(entryOffset, littleEndian) === pointerTag) {
+        return (
+          tiffStartOffset + view.getUint32(entryOffset + 8, littleEndian)
+        );
+      }
+
+      entryOffset += 12;
+    }
+
+    return null;
+  }
+
+  function updateDimensionTag(ifdOffset: number, tag: number, value: number) {
+    if (ifdOffset + 2 > view.byteLength) {
+      return;
+    }
+
+    const count = view.getUint16(ifdOffset, littleEndian);
+    let entryOffset = ifdOffset + 2;
+    for (let index = 0; index < count; index++) {
+      if (entryOffset + 12 > view.byteLength) {
+        return;
+      }
+
+      if (view.getUint16(entryOffset, littleEndian) === tag) {
+        const type = view.getUint16(entryOffset + 2, littleEndian);
+        const componentCount = view.getUint32(entryOffset + 4, littleEndian);
+        if (componentCount !== 1) {
+          return;
+        }
+
+        if (type === 3 && value <= 65535) {
+          view.setUint16(entryOffset + 8, value, littleEndian);
+        } else if (type === 4) {
+          view.setUint32(entryOffset + 8, value, littleEndian);
+        }
+        return;
+      }
+
+      entryOffset += 12;
+    }
+  }
+
+  const exifIFDOffset = getLinkedIFDOffset(firstIFDOffset, TAGS.ExifIFDPointer);
+  if (!exifIFDOffset) {
+    return;
+  }
+
+  updateDimensionTag(exifIFDOffset, TAGS.ExifImageWidth, dimensions.width);
+  updateDimensionTag(exifIFDOffset, TAGS.ExifImageHeight, dimensions.height);
+}
+
+async function getEditedBlob(file: LoadedFile) {
   applyFormToWorkingBuffer(file);
-  const outputBuffer = file.xmpRemoved
+  const requestedDimensions = getRequestedDimensions(file);
+  updateExifPixelDimensions(file.workingBuffer, requestedDimensions);
+
+  const metadataSourceBuffer = file.xmpRemoved
     ? stripXmpSegments(file.workingBuffer)
     : file.workingBuffer;
+  let outputBuffer = metadataSourceBuffer;
+
+  if (dimensionsChanged(file.dimensions, requestedDimensions)) {
+    const metadataSegments = getJpegMetadataSegments(metadataSourceBuffer);
+    const resizedBuffer = await resizeJpegBuffer(
+      metadataSourceBuffer,
+      requestedDimensions
+    );
+    outputBuffer = insertJpegMetadataSegments(resizedBuffer, metadataSegments);
+  }
+
   return new Blob([outputBuffer], { type: "image/jpeg" });
 }
 
@@ -997,7 +1408,8 @@ async function downloadAllLoadedFiles() {
   );
   const entries = await Promise.all(
     loadedFiles.map(async (file, index) => {
-      const data = new Uint8Array(await getEditedBlob(file).arrayBuffer());
+      const editedBlob = await getEditedBlob(file);
+      const data = new Uint8Array(await editedBlob.arrayBuffer());
       return { name: names[index], data };
     })
   );
@@ -1015,7 +1427,7 @@ async function shareLoadedFile(fileId: string) {
 
   try {
     const sharedFile = new File(
-      [getEditedBlob(file)],
+      [await getEditedBlob(file)],
       getDownloadFilename(file),
       {
         type: "image/jpeg",
@@ -1152,13 +1564,21 @@ async function handleFileList(list: FileList | null) {
     const fileReader = new FileReader();
     const originalBuffer = await fileReader.readAsArrayBuffer(file);
     const workingBuffer = originalBuffer.slice(0);
+    const dimensions = parseJpegDimensions(originalBuffer);
     let fileFields: EXIFField[] = [];
     const xmpMetadata = parseXmpMetadata(originalBuffer);
 
     try {
       fileFields = parseExifDates(workingBuffer);
     } catch (err) {
-      console.error(err);
+      if (
+        err instanceof Error &&
+        err.message === "No EXIF APP1 segment found"
+      ) {
+        console.info(`${file.name} has no EXIF APP1 segment.`);
+      } else {
+        console.error(err);
+      }
     }
 
     addedFiles.push({
@@ -1166,6 +1586,7 @@ async function handleFileList(list: FileList | null) {
       filename: file.name,
       originalFilename: file.name,
       workingBuffer,
+      dimensions: dimensions ?? { width: 0, height: 0 },
       parsedFields: fileFields,
       xmpMetadata,
       xmpRemoved: false,
@@ -1252,7 +1673,7 @@ function removeLoadedFile(fileId: string) {
   }
 }
 
-function downloadLoadedFile(fileId: string) {
+async function downloadLoadedFile(fileId: string) {
   const file = loadedFiles.find((item) => item.id === fileId);
   if (!file) {
     return;
@@ -1264,7 +1685,7 @@ function downloadLoadedFile(fileId: string) {
   }
 
   const filename = getDownloadFilename(file);
-  triggerBlobDownload(getEditedBlob(file), filename);
+  triggerBlobDownload(await getEditedBlob(file), filename);
   status.textContent = `Downloaded ${filename}.`;
 }
 
@@ -2542,6 +2963,10 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
   form.innerHTML = "";
   updateSyncButtonVisibility(file);
 
+  if (file.elements?.dimensionsPanel) {
+    form.appendChild(file.elements.dimensionsPanel);
+  }
+
   if (!file.parsedFields.length) {
     return;
   }
@@ -2979,6 +3404,16 @@ function appendFileEditor(file: LoadedFile) {
   const moveUpButton = document.createElement("button");
   const moveDownButton = document.createElement("button");
   const editorPanel = document.createElement("div");
+  const dimensionsPanel = document.createElement("div");
+  const dimensionsHeading = document.createElement("div");
+  const dimensionsGrid = document.createElement("div");
+  const dimensionWidthRow = document.createElement("label");
+  const dimensionWidthInput = document.createElement("input");
+  const dimensionHeightRow = document.createElement("label");
+  const dimensionHeightInput = document.createElement("input");
+  const dimensionLockRow = document.createElement("label");
+  const dimensionLockInput = document.createElement("input");
+  const dimensionResetButton = document.createElement("button");
   const form = document.createElement("form");
   const gpsEditorEl = document.createElement("div");
   const gpsMapChrome = document.createElement("div");
@@ -3042,6 +3477,33 @@ function appendFileEditor(file: LoadedFile) {
   moveDownButton.innerHTML =
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19 19 12h-4V5H9v7H5l7 7Z"/></svg>';
   editorPanel.className = "editor-panel";
+  dimensionsPanel.className = "dimensions-panel";
+  dimensionsHeading.className = "metadata-heading";
+  dimensionsHeading.textContent = "Image Dimensions";
+  dimensionsGrid.className = "dimensions-grid";
+  dimensionWidthRow.className = "dimension-field";
+  dimensionWidthRow.textContent = "Width";
+  dimensionWidthInput.type = "number";
+  dimensionWidthInput.min = "1";
+  dimensionWidthInput.max = "65535";
+  dimensionWidthInput.step = "1";
+  dimensionWidthInput.value = file.dimensions.width.toString();
+  dimensionWidthInput.setAttribute("aria-label", "Image width in pixels");
+  dimensionHeightRow.className = "dimension-field";
+  dimensionHeightRow.textContent = "Height";
+  dimensionHeightInput.type = "number";
+  dimensionHeightInput.min = "1";
+  dimensionHeightInput.max = "65535";
+  dimensionHeightInput.step = "1";
+  dimensionHeightInput.value = file.dimensions.height.toString();
+  dimensionHeightInput.setAttribute("aria-label", "Image height in pixels");
+  dimensionLockRow.className = "dimension-lock";
+  dimensionLockInput.type = "checkbox";
+  dimensionLockInput.checked = true;
+  dimensionLockInput.setAttribute("aria-label", "Lock image aspect ratio");
+  dimensionResetButton.type = "button";
+  dimensionResetButton.className = "ghost";
+  dimensionResetButton.textContent = "Reset";
   form.className = "file-fields";
   gpsEditorEl.className = "gps-editor";
   gpsEditorEl.style.display = "none";
@@ -3106,6 +3568,40 @@ function appendFileEditor(file: LoadedFile) {
   });
   moveUpButton.addEventListener("click", () => moveLoadedFile(file.id, -1));
   moveDownButton.addEventListener("click", () => moveLoadedFile(file.id, 1));
+  dimensionWidthInput.addEventListener("input", () => {
+    if (!dimensionLockInput.checked || file.dimensions.width < 1) {
+      return;
+    }
+
+    const width = Number(dimensionWidthInput.value);
+    if (!Number.isInteger(width) || width < 1) {
+      return;
+    }
+
+    dimensionHeightInput.value = Math.max(
+      1,
+      Math.round((width * file.dimensions.height) / file.dimensions.width)
+    ).toString();
+  });
+  dimensionHeightInput.addEventListener("input", () => {
+    if (!dimensionLockInput.checked || file.dimensions.height < 1) {
+      return;
+    }
+
+    const height = Number(dimensionHeightInput.value);
+    if (!Number.isInteger(height) || height < 1) {
+      return;
+    }
+
+    dimensionWidthInput.value = Math.max(
+      1,
+      Math.round((height * file.dimensions.width) / file.dimensions.height)
+    ).toString();
+  });
+  dimensionResetButton.addEventListener("click", () => {
+    dimensionWidthInput.value = file.dimensions.width.toString();
+    dimensionHeightInput.value = file.dimensions.height.toString();
+  });
   syncButton.addEventListener("click", () =>
     syncDateTimeFieldsToOriginal(file)
   );
@@ -3149,7 +3645,9 @@ function appendFileEditor(file: LoadedFile) {
       gpsMapRefreshButton.disabled = false;
     });
   });
-  downloadButton.addEventListener("click", () => downloadLoadedFile(file.id));
+  downloadButton.addEventListener("click", () => {
+    void downloadLoadedFile(file.id);
+  });
   clearButton.addEventListener("click", () => removeLoadedFile(file.id));
 
   previewButton.appendChild(previewImg);
@@ -3165,9 +3663,23 @@ function appendFileEditor(file: LoadedFile) {
   previewFrame.appendChild(reorderRail);
   previewFrame.appendChild(previewPanel);
   previewColumn.appendChild(previewFrame);
+  dimensionWidthRow.appendChild(dimensionWidthInput);
+  dimensionHeightRow.appendChild(dimensionHeightInput);
+  dimensionLockRow.appendChild(dimensionLockInput);
+  dimensionLockRow.append("Lock ratio");
+  dimensionsGrid.appendChild(dimensionWidthRow);
+  dimensionsGrid.appendChild(dimensionHeightRow);
+  dimensionsGrid.appendChild(dimensionLockRow);
+  dimensionsGrid.appendChild(dimensionResetButton);
+  dimensionsPanel.appendChild(dimensionsHeading);
+  dimensionsPanel.appendChild(dimensionsGrid);
   file.elements = {
     container,
     form,
+    dimensionsPanel,
+    dimensionWidthInput,
+    dimensionHeightInput,
+    dimensionLockInput,
     gpsEditor: gpsEditorEl,
     gpsMapChrome,
     gpsSearchRow,
