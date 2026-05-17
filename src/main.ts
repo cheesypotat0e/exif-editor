@@ -75,13 +75,18 @@ type LoadedFile = {
   xmpMetadata?: XMPMetadata | null;
   xmpRemoved?: boolean;
   previewUrl: string;
+  previewRefreshId?: number;
+  previewRenderToken?: number;
   gpsMap?: L.Map | null;
   gpsMarker?: L.Marker | null;
   gpsTileLayer?: L.TileLayer | null;
   elements?: {
     container: HTMLDivElement;
     form: HTMLFormElement;
-    dimensionsPanel: HTMLDivElement;
+    timestampPanel: HTMLDetailsElement;
+    timestampEnabledInput: HTMLInputElement;
+    timestampAddressInputs: HTMLInputElement[];
+    dimensionsPanel: HTMLDetailsElement;
     dimensionWidthInput: HTMLInputElement;
     dimensionHeightInput: HTMLInputElement;
     dimensionLockInput: HTMLInputElement;
@@ -210,15 +215,15 @@ const uploader = document.getElementById("uploader") as HTMLDivElement;
 const fileInput = document.getElementById("fileInput") as HTMLInputElement;
 const imageModal = document.getElementById("imageModal") as HTMLDivElement;
 const imageModalBackdrop = document.getElementById(
-  "imageModalBackdrop"
+  "imageModalBackdrop",
 ) as HTMLDivElement;
 const modalPreview = document.getElementById(
-  "modalPreview"
+  "modalPreview",
 ) as HTMLImageElement;
 const fileListEl = document.getElementById("fileList") as HTMLDivElement;
 const status = document.getElementById("status") as HTMLDivElement;
 const downloadAllButton = document.getElementById(
-  "downloadAllButton"
+  "downloadAllButton",
 ) as HTMLButtonElement;
 
 // drag/drop
@@ -285,7 +290,7 @@ document.addEventListener("keydown", (event) => {
   }
 
   const fullscreenFile = loadedFiles.find((file) =>
-    file.elements?.gpsEditor.classList.contains("is-fullscreen")
+    file.elements?.gpsEditor.classList.contains("is-fullscreen"),
   );
   if (fullscreenFile) {
     setGpsFullscreen(fullscreenFile, false);
@@ -303,7 +308,7 @@ window.addEventListener(
       positionDateTimePickerPopup(activeDateTimePicker);
     }
   },
-  true
+  true,
 );
 window.addEventListener("online", () => {
   void refreshInternetConnectivity({ announce: true });
@@ -327,13 +332,13 @@ function hasApplicableXmpData(metadata: XMPMetadata | null | undefined) {
 
   return Boolean(
     metadata.toolkit ||
-      metadata.modifyDate ||
-      metadata.metadataDate ||
-      metadata.creatorTool ||
-      metadata.documentId ||
-      metadata.instanceId ||
-      metadata.originalDocumentId ||
-      metadata.history.length
+    metadata.modifyDate ||
+    metadata.metadataDate ||
+    metadata.creatorTool ||
+    metadata.documentId ||
+    metadata.instanceId ||
+    metadata.originalDocumentId ||
+    metadata.history.length,
   );
 }
 
@@ -431,11 +436,11 @@ function setGpsFullscreen(file: LoadedFile, expanded: boolean) {
   elements.gpsEditor.classList.toggle("is-fullscreen", expanded);
   elements.gpsFullscreenButton.setAttribute(
     "aria-label",
-    expanded ? "Exit fullscreen map" : "Open fullscreen map"
+    expanded ? "Exit fullscreen map" : "Open fullscreen map",
   );
   elements.gpsFullscreenButton.setAttribute(
     "aria-pressed",
-    expanded ? "true" : "false"
+    expanded ? "true" : "false",
   );
   elements.gpsFullscreenButton.textContent = expanded
     ? "Exit fullscreen"
@@ -473,10 +478,10 @@ function getGpsCoordinateControls(file: LoadedFile) {
   }
 
   const latitudeFieldIndex = file.parsedFields.findIndex(
-    (field) => field.name === "GPSLatitude"
+    (field) => field.name === "GPSLatitude",
   );
   const longitudeFieldIndex = file.parsedFields.findIndex(
-    (field) => field.name === "GPSLongitude"
+    (field) => field.name === "GPSLongitude",
   );
 
   if (latitudeFieldIndex === -1 || longitudeFieldIndex === -1) {
@@ -484,10 +489,10 @@ function getGpsCoordinateControls(file: LoadedFile) {
   }
 
   const latitudeInput = file.elements.form.querySelector(
-    `[data-idx="${latitudeFieldIndex}"]`
+    `[data-idx="${latitudeFieldIndex}"]`,
   ) as HTMLInputElement | null;
   const longitudeInput = file.elements.form.querySelector(
-    `[data-idx="${longitudeFieldIndex}"]`
+    `[data-idx="${longitudeFieldIndex}"]`,
   ) as HTMLInputElement | null;
 
   if (!latitudeInput || !longitudeInput) {
@@ -509,10 +514,10 @@ function ensureGpsMap(file: LoadedFile, lat: number, lon: number) {
       "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
       {
         attribution: "&copy; OpenStreetMap contributors",
-      }
+      },
     ).addTo(file.gpsMap);
     file.gpsMarker = L.marker([lat, lon], { draggable: true }).addTo(
-      file.gpsMap
+      file.gpsMap,
     );
     file.gpsMarker.on("dragend", () => {
       const markerLatLng = file.gpsMarker?.getLatLng();
@@ -566,7 +571,7 @@ function writeGeocodeCache(cache: Record<string, GeocodeCacheEntry>) {
       .slice(0, GEOCODE_CACHE_MAX_ENTRIES);
     localStorage.setItem(
       GEOCODE_CACHE_KEY,
-      JSON.stringify(Object.fromEntries(entries))
+      JSON.stringify(Object.fromEntries(entries)),
     );
   } catch (error) {
     console.error("Failed to write geocode cache", error);
@@ -593,7 +598,7 @@ function getCachedGeocode(address: string) {
 
 function setCachedGeocode(
   address: string,
-  value: Omit<GeocodeCacheEntry, "cachedAt">
+  value: Omit<GeocodeCacheEntry, "cachedAt">,
 ) {
   const normalized = normalizeGeocodeQuery(address);
   const cache = readGeocodeCache();
@@ -612,13 +617,13 @@ async function geocodeAddress(address: string) {
 
   const response = await fetch(
     `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(
-      address
+      address,
     )}`,
     {
       headers: {
         Accept: "application/json",
       },
-    }
+    },
   );
 
   if (!response.ok) {
@@ -746,7 +751,7 @@ function getXmpSegmentRanges(arrayBuffer: ArrayBuffer) {
       marker === TAGS.APP1_MARKER &&
       payloadStart + xmpHeader.length <= bytes.length &&
       decoder.decode(
-        bytes.subarray(payloadStart, payloadStart + xmpHeader.length)
+        bytes.subarray(payloadStart, payloadStart + xmpHeader.length),
       ) === xmpHeader
     ) {
       ranges.push({ start: markerOffset, end: segmentEnd });
@@ -865,7 +870,7 @@ function getJpegMetadataInsertionOffset(arrayBuffer: ArrayBuffer) {
 
 function insertJpegMetadataSegments(
   jpegBuffer: ArrayBuffer,
-  segments: Uint8Array[]
+  segments: Uint8Array[],
 ) {
   if (!segments.length) {
     return jpegBuffer;
@@ -875,7 +880,7 @@ function insertJpegMetadataSegments(
   const insertionOffset = getJpegMetadataInsertionOffset(jpegBuffer);
   const metadataLength = segments.reduce(
     (total, segment) => total + segment.length,
-    0
+    0,
   );
   const result = new Uint8Array(bytes.length + metadataLength);
   let writeOffset = 0;
@@ -915,6 +920,40 @@ function dimensionsChanged(a: ImageDimensions, b: ImageDimensions) {
   return a.width !== b.width || a.height !== b.height;
 }
 
+function getTimestampAddressLines(file: LoadedFile) {
+  return (
+    file.elements?.timestampAddressInputs
+      .map((input) => input.value.trim())
+      .filter((line) => line !== "")
+      .slice(0, 4) ?? []
+  );
+}
+
+function getTimestampDate(file: LoadedFile) {
+  const dateFieldIndex = file.parsedFields.findIndex(
+    (field) => field.type === "datetime" && field.name === "DateTimeOriginal",
+  );
+  if (dateFieldIndex === -1 || !file.elements) {
+    return null;
+  }
+
+  const input = file.elements.form.querySelector(
+    `[data-idx="${dateFieldIndex}"]`,
+  ) as HTMLInputElement | null;
+  const inputValue =
+    input?.value ??
+    (typeof file.parsedFields[dateFieldIndex].value === "string"
+      ? toInputDateTime(file.parsedFields[dateFieldIndex].value)
+      : "");
+  const date = parseInputDateTimeValue(inputValue);
+
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+function isTimestampOverlayEnabled(file: LoadedFile) {
+  return file.elements?.timestampEnabledInput.checked === true;
+}
+
 function canvasToJpegBlob(canvas: HTMLCanvasElement, quality = 0.92) {
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
@@ -926,7 +965,7 @@ function canvasToJpegBlob(canvas: HTMLCanvasElement, quality = 0.92) {
         }
       },
       "image/jpeg",
-      quality
+      quality,
     );
   });
 }
@@ -950,7 +989,7 @@ async function decodeImageBitmap(blob: Blob) {
 
 async function resizeJpegBuffer(
   arrayBuffer: ArrayBuffer,
-  dimensions: ImageDimensions
+  dimensions: ImageDimensions,
 ) {
   const sourceBlob = new Blob([arrayBuffer], { type: "image/jpeg" });
   const image = await decodeImageBitmap(sourceBlob);
@@ -977,11 +1016,11 @@ async function resizeJpegBuffer(
     const intermediateCanvas = document.createElement("canvas");
     intermediateCanvas.width = Math.max(
       dimensions.width,
-      Math.round(sourceWidth / 2)
+      Math.round(sourceWidth / 2),
     );
     intermediateCanvas.height = Math.max(
       dimensions.height,
-      Math.round(sourceHeight / 2)
+      Math.round(sourceHeight / 2),
     );
 
     const intermediateContext = intermediateCanvas.getContext("2d");
@@ -996,7 +1035,7 @@ async function resizeJpegBuffer(
       0,
       0,
       intermediateCanvas.width,
-      intermediateCanvas.height
+      intermediateCanvas.height,
     );
 
     source = intermediateCanvas;
@@ -1012,6 +1051,127 @@ async function resizeJpegBuffer(
 
   const resizedBlob = await canvasToJpegBlob(canvas);
   return resizedBlob.arrayBuffer();
+}
+
+async function addTimestampOverlay(
+  imageBuffer: ArrayBuffer | Uint8Array,
+  dateObj: Date,
+  addressLines: string[],
+) {
+  return new Promise<ArrayBuffer>((resolve, reject) => {
+    const blob = new Blob([new Uint8Array(imageBuffer)], {
+      type: "image/jpeg",
+    });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("Canvas rendering is unavailable"));
+        return;
+      }
+
+      ctx.drawImage(img, 0, 0);
+
+      const dateStr = dateObj.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+      const timeStr = dateObj.toLocaleTimeString("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+      const timestampLine = `${dateStr} at ${timeStr}`;
+      const validAddressLines = addressLines.filter(
+        (line) => line && line.trim() !== "",
+      );
+      const linesToDraw = [timestampLine, ...validAddressLines.slice(0, 4)];
+
+      // 1. Find the shortest edge to ensure uniformity across Portrait/Landscape/Square
+      const shortEdge = Math.min(canvas.width, canvas.height);
+
+      // 2. Calculate dimensions using exact percentages from the original reference
+      const fontSize = shortEdge * 0.0562; // ~5.62% of image scale
+      const lineHeight = shortEdge * 0.0618; // ~6.18% spacing between lines
+      const marginX = shortEdge * 0.0565; // ~5.65% left padding
+      const marginBottom = shortEdge * 0.0565; // ~5.65% bottom padding
+
+      // Scale the shadow proportionally (min 1px so it doesn't disappear on tiny images)
+      const shadowOffset = Math.max(1, shortEdge * 0.0007);
+
+      // 3. Configure Font and Text properties
+      // Use exactly the calculated font size
+      ctx.font = `${fontSize}px "-apple-system", "BlinkMacSystemFont", "SF Pro", "San Francisco", "Roboto", "Arial", sans-serif`;
+      ctx.fillStyle = "#FFFFFF";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "bottom"; // Anchors to the bottom of the text
+
+      // 4. Apply the Drop Shadow
+      ctx.shadowColor = "rgba(0, 0, 0, 1)";
+      ctx.shadowOffsetX = shadowOffset;
+      ctx.shadowOffsetY = shadowOffset;
+      ctx.shadowBlur = Math.max(1, shadowOffset * 0.5); // Very slight blur to soften the sub-pixels
+
+      // 5. Draw the text lines from bottom to top
+      let currentY = canvas.height - marginBottom;
+
+      for (let i = linesToDraw.length - 1; i >= 0; i--) {
+        ctx.fillText(linesToDraw[i], marginX, currentY);
+        currentY -= lineHeight;
+      }
+
+      // const referenceWidth = 3024;
+      // const scale = canvas.width / referenceWidth;
+
+      // const fontSize = Math.max(1, Math.round(175 * scale));
+      // const lineHeight = Math.max(1, Math.round(188 * scale));
+      // const marginX = Math.max(1, Math.round(170 * scale));
+      // const marginBottom = Math.max(1, Math.round(170 * scale));
+
+      // ctx.font = `${fontSize}px "-apple-system", "BlinkMacSystemFont", "SF Pro", "San Francisco", "Roboto", "Arial", sans-serif`;
+      // ctx.fillStyle = "#FFFFFF";
+      // ctx.textAlign = "left";
+      // ctx.textBaseline = "bottom";
+      // ctx.shadowColor = "rgba(0, 0, 0, 1)";
+      // ctx.shadowOffsetX = 2 * scale;
+      // ctx.shadowOffsetY = 2 * scale;
+      // ctx.shadowBlur = 1 * scale;
+
+      // let currentY = canvas.height - marginBottom;
+      // for (let i = linesToDraw.length - 1; i >= 0; i--) {
+      //   ctx.fillText(linesToDraw[i], marginX, currentY);
+      //   currentY -= lineHeight;
+      // }
+
+      canvas.toBlob(
+        (outBlob) => {
+          if (!outBlob) {
+            reject(new Error("Canvas to Blob conversion failed"));
+            return;
+          }
+
+          outBlob.arrayBuffer().then(resolve).catch(reject);
+        },
+        "image/jpeg",
+        0.95,
+      );
+    };
+
+    img.onerror = (err) => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Failed to load image from buffer: " + err));
+    };
+
+    img.src = url;
+  });
 }
 
 function parseJpegDimensions(arrayBuffer: ArrayBuffer): ImageDimensions | null {
@@ -1055,7 +1215,7 @@ function parseJpegDimensions(arrayBuffer: ArrayBuffer): ImageDimensions | null {
 
 function updateExifPixelDimensions(
   arrayBuffer: ArrayBuffer,
-  dimensions: ImageDimensions
+  dimensions: ImageDimensions,
 ) {
   const view = new DataView(arrayBuffer);
   if (view.byteLength < 4 || view.getUint16(0, false) !== TAGS.JPEG_START) {
@@ -1122,9 +1282,7 @@ function updateExifPixelDimensions(
       }
 
       if (view.getUint16(entryOffset, littleEndian) === pointerTag) {
-        return (
-          tiffStartOffset + view.getUint32(entryOffset + 8, littleEndian)
-        );
+        return tiffStartOffset + view.getUint32(entryOffset + 8, littleEndian);
       }
 
       entryOffset += 12;
@@ -1182,14 +1340,24 @@ async function getEditedBlob(file: LoadedFile) {
     ? stripXmpSegments(file.workingBuffer)
     : file.workingBuffer;
   let outputBuffer = metadataSourceBuffer;
+  const metadataSegments = getJpegMetadataSegments(metadataSourceBuffer);
 
   if (dimensionsChanged(file.dimensions, requestedDimensions)) {
-    const metadataSegments = getJpegMetadataSegments(metadataSourceBuffer);
     const resizedBuffer = await resizeJpegBuffer(
       metadataSourceBuffer,
-      requestedDimensions
+      requestedDimensions,
     );
     outputBuffer = insertJpegMetadataSegments(resizedBuffer, metadataSegments);
+  }
+
+  const timestampDate = getTimestampDate(file);
+  if (isTimestampOverlayEnabled(file) && timestampDate) {
+    const overlayBuffer = await addTimestampOverlay(
+      outputBuffer,
+      timestampDate,
+      getTimestampAddressLines(file),
+    );
+    outputBuffer = insertJpegMetadataSegments(overlayBuffer, metadataSegments);
   }
 
   return new Blob([outputBuffer], { type: "image/jpeg" });
@@ -1204,6 +1372,48 @@ function triggerBlobDownload(blob: Blob, filename: string) {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+function schedulePreviewRefresh(file: LoadedFile) {
+  if (!file.elements) {
+    return;
+  }
+
+  if (file.previewRefreshId !== undefined) {
+    window.clearTimeout(file.previewRefreshId);
+  }
+
+  file.previewRefreshId = window.setTimeout(() => {
+    file.previewRefreshId = undefined;
+    void refreshFilePreview(file);
+  }, 250);
+}
+
+async function refreshFilePreview(file: LoadedFile) {
+  if (!file.elements) {
+    return;
+  }
+
+  const token = (file.previewRenderToken ?? 0) + 1;
+  file.previewRenderToken = token;
+
+  try {
+    const blob = await getEditedBlob(file);
+    if (file.previewRenderToken !== token || !file.elements) {
+      return;
+    }
+
+    const nextUrl = URL.createObjectURL(blob);
+    const previousUrl = file.previewUrl;
+    file.previewUrl = nextUrl;
+    file.elements.previewImg.src = nextUrl;
+    if (!imageModal.hidden && modalPreview.src === previousUrl) {
+      modalPreview.src = nextUrl;
+    }
+    URL.revokeObjectURL(previousUrl);
+  } catch (error) {
+    console.error("Failed to refresh image preview", error);
+  }
 }
 
 function getUniqueFilenames(names: string[]) {
@@ -1393,9 +1603,17 @@ function createStoredZip(entries: { name: string; data: Uint8Array }[]) {
   endView.setUint32(12, centralSize, true);
   endView.setUint32(16, centralOffset, true);
 
-  return new Blob([...localParts, ...centralParts, endRecord], {
-    type: "application/zip",
-  });
+  // Ensure all parts are of type BlobPart (Uint8Array is allowed)
+  return new Blob(
+    [
+      ...(localParts as BlobPart[]),
+      ...(centralParts as BlobPart[]),
+      endRecord as BlobPart,
+    ],
+    {
+      type: "application/zip",
+    },
+  );
 }
 
 async function downloadAllLoadedFiles() {
@@ -1404,14 +1622,14 @@ async function downloadAllLoadedFiles() {
   }
 
   const names = getUniqueFilenames(
-    loadedFiles.map((file) => getDownloadFilename(file))
+    loadedFiles.map((file) => getDownloadFilename(file)),
   );
   const entries = await Promise.all(
     loadedFiles.map(async (file, index) => {
       const editedBlob = await getEditedBlob(file);
       const data = new Uint8Array(await editedBlob.arrayBuffer());
       return { name: names[index], data };
-    })
+    }),
   );
 
   const archive = createStoredZip(entries);
@@ -1431,7 +1649,7 @@ async function shareLoadedFile(fileId: string) {
       getDownloadFilename(file),
       {
         type: "image/jpeg",
-      }
+      },
     );
     await navigator.share({
       files: [sharedFile],
@@ -1456,7 +1674,7 @@ function parseXmpMetadata(arrayBuffer: ArrayBuffer): XMPMetadata | null {
     const attrName = element
       .getAttributeNames()
       .find((name) => name.split(":").pop() === localName);
-    return attrName ? element.getAttribute(attrName) ?? undefined : undefined;
+    return attrName ? (element.getAttribute(attrName) ?? undefined) : undefined;
   };
 
   let offset = 2;
@@ -1484,11 +1702,11 @@ function parseXmpMetadata(arrayBuffer: ArrayBuffer): XMPMetadata | null {
       marker === TAGS.APP1_MARKER &&
       payloadEnd <= bytes.length &&
       decoder.decode(
-        bytes.subarray(payloadStart, payloadStart + xmpHeader.length)
+        bytes.subarray(payloadStart, payloadStart + xmpHeader.length),
       ) === xmpHeader
     ) {
       const xml = decoder.decode(
-        bytes.subarray(payloadStart + xmpHeader.length, payloadEnd)
+        bytes.subarray(payloadStart + xmpHeader.length, payloadEnd),
       );
       const doc = new DOMParser().parseFromString(xml, "application/xml");
 
@@ -1512,7 +1730,7 @@ function parseXmpMetadata(arrayBuffer: ArrayBuffer): XMPMetadata | null {
         }))
         .filter(
           (entry) =>
-            entry.action || entry.changed || entry.softwareAgent || entry.when
+            entry.action || entry.changed || entry.softwareAgent || entry.when,
         );
 
       const metadata: XMPMetadata = {
@@ -1637,7 +1855,7 @@ function finishFilenameEdit(file: LoadedFile) {
   file.elements.previewImg.alt = downloadName;
   file.elements.previewButton.setAttribute(
     "aria-label",
-    `Open larger image preview for ${downloadName}`
+    `Open larger image preview for ${downloadName}`,
   );
 }
 
@@ -1656,6 +1874,10 @@ function removeLoadedFile(fileId: string) {
   }
 
   const [removed] = loadedFiles.splice(fileIndex, 1);
+  if (removed.previewRefreshId !== undefined) {
+    window.clearTimeout(removed.previewRefreshId);
+  }
+  removed.previewRenderToken = (removed.previewRenderToken ?? 0) + 1;
   URL.revokeObjectURL(removed.previewUrl);
   if (removed.elements?.gpsEditor.classList.contains("is-fullscreen")) {
     document.body.classList.remove("map-fullscreen-open");
@@ -1706,7 +1928,7 @@ function closeImageModal() {
 
 function parseInputDateTimeValue(value: string) {
   const match = value.match(
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/,
   );
 
   if (!match) {
@@ -1720,7 +1942,7 @@ function parseInputDateTimeValue(value: string) {
     Number(d),
     Number(hh),
     Number(mm),
-    Number(ss)
+    Number(ss),
   );
 
   if (Number.isNaN(date.getTime())) {
@@ -1774,15 +1996,17 @@ function getPreferredPhotoOffset(fields: EXIFField[]) {
     fields.find(
       (field) =>
         field.name === "DateTimeOriginal" &&
-        typeof field._timezoneOffset === "string"
+        typeof field._timezoneOffset === "string",
     )?._timezoneOffset ??
     fields.find(
       (field) =>
-        field.name === "CreateDate" && typeof field._timezoneOffset === "string"
+        field.name === "CreateDate" &&
+        typeof field._timezoneOffset === "string",
     )?._timezoneOffset ??
     fields.find(
       (field) =>
-        field.name === "ModifyDate" && typeof field._timezoneOffset === "string"
+        field.name === "ModifyDate" &&
+        typeof field._timezoneOffset === "string",
     )?._timezoneOffset
   );
 }
@@ -1825,14 +2049,14 @@ function getGpsUtcDate(dateStr: string, timeArr: number[]) {
   const [h, m, s] = timeArr;
 
   return new Date(
-    Date.UTC(parseInt(year), parseInt(month) - 1, parseInt(day), h, m, s || 0)
+    Date.UTC(parseInt(year), parseInt(month) - 1, parseInt(day), h, m, s || 0),
   );
 }
 
 function getGpsLocalDateTimeFromUtc(
   dateStr: string,
   timeArr: number[],
-  timezoneOffset?: string
+  timezoneOffset?: string,
 ) {
   const utcDate = getGpsUtcDate(dateStr, timeArr);
   if (!utcDate) {
@@ -1861,7 +2085,7 @@ function getGpsUtcPartsFromLocalInput(
   hours: number,
   minutes: number,
   seconds: number,
-  timezoneOffset?: string
+  timezoneOffset?: string,
 ) {
   const offsetMinutes = parseExifOffsetMinutes(timezoneOffset);
 
@@ -1894,7 +2118,7 @@ function getGpsUtcPartsFromLocalInput(
 function getEpochTimestampValue(
   date: Date,
   timezoneOffset?: string,
-  subSeconds?: string
+  subSeconds?: string,
 ) {
   const offsetMinutes = parseExifOffsetMinutes(timezoneOffset);
   const subSecondMillis = parseExifSubSecondsMillis(subSeconds);
@@ -1911,7 +2135,7 @@ function getEpochTimestampValue(
       date.getHours(),
       date.getMinutes(),
       date.getSeconds(),
-      Math.round(subSecondMillis)
+      Math.round(subSecondMillis),
     ) -
     offsetMinutes * 60 * 1000;
 
@@ -2042,12 +2266,12 @@ function getInlineValueByteLength(type: number, count: number) {
     type === 1 || type === 2 || type === 6 || type === 7
       ? 1
       : type === 3 || type === 8
-      ? 2
-      : type === 4 || type === 9 || type === 11
-      ? 4
-      : type === 5 || type === 10 || type === 12
-      ? 8
-      : 0;
+        ? 2
+        : type === 4 || type === 9 || type === 11
+          ? 4
+          : type === 5 || type === 10 || type === 12
+            ? 8
+            : 0;
 
   return bytesPerComponent * count;
 }
@@ -2071,7 +2295,7 @@ function setPickerDate(state: DateTimePickerState, nextDate: Date) {
     nextDate.getDate(),
     state.selectedDate.getHours(),
     state.selectedDate.getMinutes(),
-    state.selectedDate.getSeconds()
+    state.selectedDate.getSeconds(),
   );
   state.viewYear = state.selectedDate.getFullYear();
   state.viewMonth = state.selectedDate.getMonth();
@@ -2081,7 +2305,7 @@ function setPickerDate(state: DateTimePickerState, nextDate: Date) {
 function setPickerTimePart(
   state: DateTimePickerState,
   part: "hours12" | "minutes" | "seconds" | "meridiem",
-  value: number
+  value: number,
 ) {
   const next = new Date(state.selectedDate);
 
@@ -2118,10 +2342,10 @@ function commitVisibleDateTimeSegments(state: DateTimePickerState) {
     rawMeridiem === "P" || rawMeridiem === "PM"
       ? "PM"
       : rawMeridiem === "A" || rawMeridiem === "AM"
-      ? "AM"
-      : state.selectedDate.getHours() >= 12
-      ? "PM"
-      : "AM";
+        ? "AM"
+        : state.selectedDate.getHours() >= 12
+          ? "PM"
+          : "AM";
 
   let hour24 = hour12 % 12;
   if (meridiem === "PM") {
@@ -2144,7 +2368,7 @@ function commitVisibleDateTimeSegments(state: DateTimePickerState) {
 function adjustVisibleSegmentValue(
   state: DateTimePickerState,
   segment: "month" | "day" | "year" | "hour" | "minute" | "second" | "meridiem",
-  delta: number
+  delta: number,
 ) {
   const next = new Date(state.selectedDate);
 
@@ -2172,10 +2396,11 @@ function adjustVisibleSegmentValue(
 
 function syncDateTimePickerValue(state: DateTimePickerState) {
   state.hiddenInput.value = formatPickerDateTimeValue(state.selectedDate);
+  state.hiddenInput.dispatchEvent(new Event("input", { bubbles: true }));
   state.epochInput.value = getEpochTimestampValue(
     state.selectedDate,
     state.timezoneOffset,
-    state.subSeconds
+    state.subSeconds,
   );
   state.monthInput.value = (state.selectedDate.getMonth() + 1)
     .toString()
@@ -2223,7 +2448,7 @@ function focusSelectedDay(state: DateTimePickerState) {
     .padStart(2, "0")}`;
 
   const selectedButton = state.dayGrid.querySelector(
-    `[data-date="${selectedValue}"]`
+    `[data-date="${selectedValue}"]`,
   ) as HTMLButtonElement | null;
 
   selectedButton?.focus();
@@ -2275,7 +2500,7 @@ function renderDateTimePicker(state: DateTimePickerState) {
         month: "long",
         day: "numeric",
         year: "numeric",
-      })
+      }),
     );
 
     dayButton.addEventListener("click", () => {
@@ -2387,14 +2612,14 @@ function positionDateTimePickerPopup(state: DateTimePickerState) {
   state.popup.style.top = `${top}px`;
   state.popup.style.maxHeight = `${Math.max(
     220,
-    viewportHeight - top - padding
+    viewportHeight - top - padding,
   )}px`;
 }
 
 function createDateTimePicker(
   idx: number,
   labelId: string,
-  fieldData: EXIFField
+  fieldData: EXIFField,
 ) {
   const initialValue = toInputDateTime(fieldData.value as string);
   const initialDate = parseInputDateTimeValue(initialValue) ?? new Date();
@@ -2689,7 +2914,7 @@ function createDateTimePicker(
     input: HTMLInputElement,
     maxLength: number,
     index: number,
-    segment: "month" | "day" | "year" | "hour" | "minute" | "second"
+    segment: "month" | "day" | "year" | "hour" | "minute" | "second",
   ) {
     input.addEventListener("focus", () => input.select());
     input.addEventListener("input", () => {
@@ -2756,7 +2981,7 @@ function createDateTimePicker(
   wireVisibleSegment(visibleSecondInput, 2, 5, "second");
 
   visibleMeridiemInput.addEventListener("focus", () =>
-    visibleMeridiemInput.select()
+    visibleMeridiemInput.select(),
   );
   visibleMeridiemInput.addEventListener("input", () => {
     const normalized = visibleMeridiemInput.value
@@ -2891,10 +3116,10 @@ function setupGpsEditor(file: LoadedFile) {
   }
 
   const latitudeField = file.parsedFields.find(
-    (field) => field.name === "GPSLatitude"
+    (field) => field.name === "GPSLatitude",
   );
   const longitudeField = file.parsedFields.find(
-    (field) => field.name === "GPSLongitude"
+    (field) => field.name === "GPSLongitude",
   );
 
   if (
@@ -2912,18 +3137,18 @@ function setupGpsEditor(file: LoadedFile) {
   }
 
   const latitudeInput = elements.form.querySelector(
-    `[data-idx="${file.parsedFields.indexOf(latitudeField)}"]`
+    `[data-idx="${file.parsedFields.indexOf(latitudeField)}"]`,
   ) as HTMLInputElement | null;
   const longitudeInput = elements.form.querySelector(
-    `[data-idx="${file.parsedFields.indexOf(longitudeField)}"]`
+    `[data-idx="${file.parsedFields.indexOf(longitudeField)}"]`,
   ) as HTMLInputElement | null;
   const altitudeField = file.parsedFields.find(
-    (field) => field.name === "GPSAltitude"
+    (field) => field.name === "GPSAltitude",
   );
   const altitudeInput =
     altitudeField &&
     (elements.form.querySelector(
-      `[data-idx="${file.parsedFields.indexOf(altitudeField)}"]`
+      `[data-idx="${file.parsedFields.indexOf(altitudeField)}"]`,
     ) as HTMLInputElement | null);
 
   if (!latitudeInput || !longitudeInput) {
@@ -2963,10 +3188,6 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
   form.innerHTML = "";
   updateSyncButtonVisibility(file);
 
-  if (file.elements?.dimensionsPanel) {
-    form.appendChild(file.elements.dimensionsPanel);
-  }
-
   if (!file.parsedFields.length) {
     return;
   }
@@ -3000,7 +3221,7 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
     if (timeField.ifd === "GPS" && timeField.name === "GPSTimeStamp") {
       // For GPS time, look for GPS date stamp
       const gpsDateField = file.parsedFields.find(
-        (f) => f.name === "GPSDateStamp" && f.ifd === "GPS"
+        (f) => f.name === "GPSDateStamp" && f.ifd === "GPS",
       );
       if (gpsDateField && typeof gpsDateField.value === "string") {
         return gpsDateField.value;
@@ -3010,7 +3231,7 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
     // For other time fields, try to find a corresponding datetime field
     // Look for fields in the same IFD first, then fall back to any datetime field
     const sameIFDDateTime = file.parsedFields.find(
-      (f) => f.type === "datetime" && f.ifd === timeField.ifd
+      (f) => f.type === "datetime" && f.ifd === timeField.ifd,
     );
     if (sameIFDDateTime && typeof sameIFDDateTime.value === "string") {
       return sameIFDDateTime.value;
@@ -3057,14 +3278,14 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
               (field) =>
                 field.ifd === "GPS" &&
                 field.name === "GPSTimeStamp" &&
-                Array.isArray(field.value)
+                Array.isArray(field.value),
             );
             const localGpsDateTime =
               gpsTimeField &&
               getGpsLocalDateTimeFromUtc(
                 f.value as string,
                 gpsTimeField.value as number[],
-                photoTimezoneOffset
+                photoTimezoneOffset,
               );
             if (localGpsDateTime) {
               localDateValue = `${localGpsDateTime.date.year}-${localGpsDateTime.date.month}-${localGpsDateTime.date.day}`;
@@ -3108,7 +3329,7 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
             const localGpsDateTime = getGpsLocalDateTimeFromUtc(
               correspondingDate,
               [h, m, s || 0],
-              photoTimezoneOffset
+              photoTimezoneOffset,
             );
             if (localGpsDateTime) {
               localTime = `${localGpsDateTime.time.hours}:${localGpsDateTime.time.minutes}:${localGpsDateTime.time.seconds}`;
@@ -3117,7 +3338,7 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
 
           if (!localTime) {
             const dateMatch = correspondingDate.match(
-              /(\d{4}):(\d{2}):(\d{2})/
+              /(\d{4}):(\d{2}):(\d{2})/,
             );
             if (dateMatch) {
               const [_, year, month, day] = dateMatch;
@@ -3128,8 +3349,8 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
                   parseInt(day),
                   h,
                   m,
-                  s || 0
-                )
+                  s || 0,
+                ),
               );
               const localHours = utcDate.getHours().toString().padStart(2, "0");
               const localMinutes = utcDate
@@ -3152,8 +3373,8 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
               now.getDate(),
               h,
               m,
-              s || 0
-            )
+              s || 0,
+            ),
           );
           const localHours = utcDate.getHours().toString().padStart(2, "0");
           const localMinutes = utcDate.getMinutes().toString().padStart(2, "0");
@@ -3195,13 +3416,13 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
 function getSyncSourceField(file: LoadedFile) {
   return (
     file.parsedFields.find(
-      (field) => field.type === "datetime" && field.name === "DateTimeOriginal"
+      (field) => field.type === "datetime" && field.name === "DateTimeOriginal",
     ) ??
     file.parsedFields.find(
-      (field) => field.type === "datetime" && field.name === "CreateDate"
+      (field) => field.type === "datetime" && field.name === "CreateDate",
     ) ??
     file.parsedFields.find(
-      (field) => field.type === "datetime" && field.name === "ModifyDate"
+      (field) => field.type === "datetime" && field.name === "ModifyDate",
     ) ??
     null
   );
@@ -3214,7 +3435,7 @@ function getPrimaryExifDateTimeFields(file: LoadedFile) {
     "CreateDate",
   ]);
   return file.parsedFields.filter(
-    (field) => field.type === "datetime" && primaryFieldNames.has(field.name)
+    (field) => field.type === "datetime" && primaryFieldNames.has(field.name),
   );
 }
 
@@ -3272,7 +3493,7 @@ function syncDateTimeFieldsToOriginal(file: LoadedFile) {
     }
 
     const input = file.elements?.form.querySelector(
-      `[data-idx="${idx}"]`
+      `[data-idx="${idx}"]`,
     ) as HTMLInputElement | null;
 
     if (!input) {
@@ -3287,7 +3508,7 @@ function syncDateTimeFieldsToOriginal(file: LoadedFile) {
   renderFields(file, file.elements.form);
   updateSyncButtonVisibility(file);
   status.textContent = `Synced EXIF timestamps for ${getDownloadFilename(
-    file
+    file,
   )}.`;
 }
 
@@ -3382,7 +3603,7 @@ function clearXmpMetadata(file: LoadedFile) {
   file.xmpMetadata = null;
   renderXmpPanel(file, file.elements.xmpPanel);
   status.textContent = `Removed XMP metadata from ${getDownloadFilename(
-    file
+    file,
   )} for export.`;
 }
 
@@ -3404,8 +3625,16 @@ function appendFileEditor(file: LoadedFile) {
   const moveUpButton = document.createElement("button");
   const moveDownButton = document.createElement("button");
   const editorPanel = document.createElement("div");
-  const dimensionsPanel = document.createElement("div");
-  const dimensionsHeading = document.createElement("div");
+  const timestampPanel = document.createElement("details");
+  const timestampSummary = document.createElement("summary");
+  const timestampGrid = document.createElement("div");
+  const timestampToggleRow = document.createElement("label");
+  const timestampEnabledInput = document.createElement("input");
+  const timestampAddressInputs = Array.from({ length: 4 }, () =>
+    document.createElement("input"),
+  );
+  const dimensionsPanel = document.createElement("details");
+  const dimensionsHeading = document.createElement("summary");
   const dimensionsGrid = document.createElement("div");
   const dimensionWidthRow = document.createElement("label");
   const dimensionWidthInput = document.createElement("input");
@@ -3444,7 +3673,7 @@ function appendFileEditor(file: LoadedFile) {
   previewButton.type = "button";
   previewButton.setAttribute(
     "aria-label",
-    `Open larger image preview for ${file.filename}`
+    `Open larger image preview for ${file.filename}`,
   );
   previewImg.className = "preview";
   previewImg.alt = file.filename;
@@ -3477,9 +3706,23 @@ function appendFileEditor(file: LoadedFile) {
   moveDownButton.innerHTML =
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19 19 12h-4V5H9v7H5l7 7Z"/></svg>';
   editorPanel.className = "editor-panel";
+  timestampPanel.className = "timestamp-panel";
+  timestampSummary.className = "timestamp-summary";
+  timestampSummary.textContent = "Photo timestamp label";
+  timestampGrid.className = "timestamp-grid";
+  timestampToggleRow.className = "timestamp-toggle";
+  timestampEnabledInput.type = "checkbox";
+  timestampEnabledInput.setAttribute("aria-label", "Add timestamp to photo");
+  timestampAddressInputs.forEach((input, index) => {
+    input.type = "text";
+    input.className = "timestamp-address-input";
+    input.placeholder = `Address line ${index + 1}`;
+    input.disabled = true;
+    input.setAttribute("aria-label", `Timestamp address line ${index + 1}`);
+  });
   dimensionsPanel.className = "dimensions-panel";
-  dimensionsHeading.className = "metadata-heading";
-  dimensionsHeading.textContent = "Image Dimensions";
+  dimensionsHeading.className = "dimensions-summary";
+  dimensionsHeading.textContent = `Image dimensions: ${file.dimensions.width} x ${file.dimensions.height}`;
   dimensionsGrid.className = "dimensions-grid";
   dimensionWidthRow.className = "dimension-field";
   dimensionWidthRow.textContent = "Width";
@@ -3549,7 +3792,7 @@ function appendFileEditor(file: LoadedFile) {
   clearButton.textContent = "Clear";
 
   previewButton.addEventListener("click", () =>
-    openImageModal(file.previewUrl)
+    openImageModal(file.previewUrl),
   );
   editFilenameButton.addEventListener("click", () => beginFilenameEdit(file));
   filenameInput.addEventListener("input", () => {
@@ -3568,42 +3811,77 @@ function appendFileEditor(file: LoadedFile) {
   });
   moveUpButton.addEventListener("click", () => moveLoadedFile(file.id, -1));
   moveDownButton.addEventListener("click", () => moveLoadedFile(file.id, 1));
+  const updateTimestampAddressInputs = () => {
+    const enabled = timestampEnabledInput.checked;
+    timestampAddressInputs.forEach((input) => {
+      input.disabled = !enabled;
+    });
+  };
+  timestampEnabledInput.addEventListener("change", () => {
+    updateTimestampAddressInputs();
+    schedulePreviewRefresh(file);
+  });
+  timestampAddressInputs.forEach((input) => {
+    input.addEventListener("input", () => schedulePreviewRefresh(file));
+  });
+  form.addEventListener("input", () => schedulePreviewRefresh(file));
+  form.addEventListener("focusout", () => schedulePreviewRefresh(file));
+  const updateDimensionsSummary = () => {
+    const width = dimensionWidthInput.value || file.dimensions.width.toString();
+    const height =
+      dimensionHeightInput.value || file.dimensions.height.toString();
+    dimensionsHeading.textContent = `Image dimensions: ${width} x ${height}`;
+  };
   dimensionWidthInput.addEventListener("input", () => {
     if (!dimensionLockInput.checked || file.dimensions.width < 1) {
+      updateDimensionsSummary();
+      schedulePreviewRefresh(file);
       return;
     }
 
     const width = Number(dimensionWidthInput.value);
     if (!Number.isInteger(width) || width < 1) {
+      updateDimensionsSummary();
+      schedulePreviewRefresh(file);
       return;
     }
 
     dimensionHeightInput.value = Math.max(
       1,
-      Math.round((width * file.dimensions.height) / file.dimensions.width)
+      Math.round((width * file.dimensions.height) / file.dimensions.width),
     ).toString();
+    updateDimensionsSummary();
+    schedulePreviewRefresh(file);
   });
   dimensionHeightInput.addEventListener("input", () => {
     if (!dimensionLockInput.checked || file.dimensions.height < 1) {
+      updateDimensionsSummary();
+      schedulePreviewRefresh(file);
       return;
     }
 
     const height = Number(dimensionHeightInput.value);
     if (!Number.isInteger(height) || height < 1) {
+      updateDimensionsSummary();
+      schedulePreviewRefresh(file);
       return;
     }
 
     dimensionWidthInput.value = Math.max(
       1,
-      Math.round((height * file.dimensions.width) / file.dimensions.height)
+      Math.round((height * file.dimensions.width) / file.dimensions.height),
     ).toString();
+    updateDimensionsSummary();
+    schedulePreviewRefresh(file);
   });
   dimensionResetButton.addEventListener("click", () => {
     dimensionWidthInput.value = file.dimensions.width.toString();
     dimensionHeightInput.value = file.dimensions.height.toString();
+    updateDimensionsSummary();
+    schedulePreviewRefresh(file);
   });
   syncButton.addEventListener("click", () =>
-    syncDateTimeFieldsToOriginal(file)
+    syncDateTimeFieldsToOriginal(file),
   );
   clearXmpButton.addEventListener("click", () => clearXmpMetadata(file));
   gpsSearchButton.addEventListener("click", () => {
@@ -3663,6 +3941,12 @@ function appendFileEditor(file: LoadedFile) {
   previewFrame.appendChild(reorderRail);
   previewFrame.appendChild(previewPanel);
   previewColumn.appendChild(previewFrame);
+  timestampToggleRow.appendChild(timestampEnabledInput);
+  timestampToggleRow.append("Add timestamp to photo");
+  timestampGrid.appendChild(timestampToggleRow);
+  timestampAddressInputs.forEach((input) => timestampGrid.appendChild(input));
+  timestampPanel.appendChild(timestampSummary);
+  timestampPanel.appendChild(timestampGrid);
   dimensionWidthRow.appendChild(dimensionWidthInput);
   dimensionHeightRow.appendChild(dimensionHeightInput);
   dimensionLockRow.appendChild(dimensionLockInput);
@@ -3676,6 +3960,9 @@ function appendFileEditor(file: LoadedFile) {
   file.elements = {
     container,
     form,
+    timestampPanel,
+    timestampEnabledInput,
+    timestampAddressInputs,
     dimensionsPanel,
     dimensionWidthInput,
     dimensionHeightInput,
@@ -3717,6 +4004,8 @@ function appendFileEditor(file: LoadedFile) {
   gpsEditorEl.appendChild(gpsHintEl);
   editorPanel.appendChild(form);
   editorPanel.appendChild(gpsEditorEl);
+  editorPanel.appendChild(timestampPanel);
+  editorPanel.appendChild(dimensionsPanel);
   renderXmpPanel(file, xmpPanel);
   editorPanel.appendChild(xmpPanel);
   actions.appendChild(syncButton);
@@ -3830,7 +4119,7 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
   const { form } = file.elements;
 
   const inputs = form.querySelectorAll(
-    '[data-field-input="true"]'
+    '[data-field-input="true"]',
   ) as NodeListOf<HTMLInputElement>;
 
   const parsedFields = file.parsedFields;
@@ -3857,12 +4146,12 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
       ) {
         const [y, m, d] = newVal.split(":");
         const gpsTimeField = parsedFields.find(
-          (f) => f.name === "GPSTimeStamp" && f.ifd === "GPS"
+          (f) => f.name === "GPSTimeStamp" && f.ifd === "GPS",
         );
         const gpsTimeInput =
           gpsTimeField &&
           (form.querySelector(
-            `[data-idx="${parsedFields.indexOf(gpsTimeField)}"]`
+            `[data-idx="${parsedFields.indexOf(gpsTimeField)}"]`,
           ) as HTMLInputElement | null);
         const [hours, minutes, seconds] = gpsTimeInput
           ? fromInputTime(gpsTimeInput.value)
@@ -3874,7 +4163,7 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
           hours ?? 0,
           minutes ?? 0,
           seconds ?? 0,
-          photoTimezoneOffset
+          photoTimezoneOffset,
         );
         const utcYear = utcParts.year;
         const utcMonth = utcParts.month.toString().padStart(2, "0");
@@ -3892,7 +4181,7 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
         Array.isArray(newVal)
       ) {
         const gpsDateField = parsedFields.find(
-          (f) => f.name === "GPSDateStamp" && f.ifd === "GPS"
+          (f) => f.name === "GPSDateStamp" && f.ifd === "GPS",
         );
         if (gpsDateField && typeof gpsDateField.value === "string") {
           const dateMatch = gpsDateField.value.match(/(\d{4}):(\d{2}):(\d{2})/);
@@ -3906,7 +4195,7 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
               localHours,
               localMinutes,
               localSeconds,
-              photoTimezoneOffset
+              photoTimezoneOffset,
             );
             newVal = [utcParts.hours, utcParts.minutes, utcParts.seconds];
           }
@@ -3924,8 +4213,8 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
             ? "N"
             : "S"
           : decimal >= 0
-          ? "E"
-          : "W";
+            ? "E"
+            : "W";
       const [degrees, minutes, seconds] = dmsFromDecimal(decimal);
       const secondsScaled = Math.round(seconds * 1000000);
 
@@ -3970,7 +4259,7 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
       ) {
         // Parse the local datetime string "YYYY:MM:DD HH:MM:SS"
         const match = newVal.match(
-          /(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/
+          /(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/,
         );
         if (match) {
           const [_, y, m, d, hh, mm, ss] = match;
@@ -3981,7 +4270,7 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
             parseInt(hh),
             parseInt(mm),
             parseInt(ss),
-            photoTimezoneOffset
+            photoTimezoneOffset,
           );
           const utcYear = utcParts.year;
           const utcMonth = utcParts.month.toString().padStart(2, "0");
@@ -4214,7 +4503,7 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
           value = denominator !== 0 ? numerator / denominator : 0;
         } else {
           value = rationals.map(({ numerator, denominator }) =>
-            denominator !== 0 ? numerator / denominator : 0
+            denominator !== 0 ? numerator / denominator : 0,
           );
         }
 
@@ -4259,7 +4548,7 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
           values.push(
             type === 3
               ? view.getUint16(itemOffset, littleEndian)
-              : view.getUint32(itemOffset, littleEndian)
+              : view.getUint32(itemOffset, littleEndian),
           );
         }
 
@@ -4307,7 +4596,7 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
       offsetTag?: number;
       subSecTag?: number;
       companionEntries?: Map<number, IDF>;
-    }
+    },
   ) {
     const entry = entries.get(fieldDef.tag);
     if (!entry) {
@@ -4401,16 +4690,16 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
     const gpsDateEntry = gpsIFD.entries.get(TAGS.GPSDateStamp);
     const gpsTimeEntry = gpsIFD.entries.get(TAGS.GPSTimeStamp);
     const latitudeRef = decodeGpsRef(
-      gpsLatitudeRef?.value as string | number | number[] | undefined
+      gpsLatitudeRef?.value as string | number | number[] | undefined,
     );
     const longitudeRef = decodeGpsRef(
-      gpsLongitudeRef?.value as string | number | number[] | undefined
+      gpsLongitudeRef?.value as string | number | number[] | undefined,
     );
 
     if (latitudeRef && gpsLatitude && Array.isArray(gpsLatitude.value)) {
       const latitude = decimalFromDms(
         gpsLatitude.value as number[],
-        latitudeRef
+        latitudeRef,
       );
       if (latitude !== null) {
         results.push({
@@ -4431,7 +4720,7 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
     if (longitudeRef && gpsLongitude && Array.isArray(gpsLongitude.value)) {
       const longitude = decimalFromDms(
         gpsLongitude.value as number[],
-        longitudeRef
+        longitudeRef,
       );
       if (longitude !== null) {
         results.push({
@@ -4474,7 +4763,7 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
       const localGpsDateTime = getGpsLocalDateTimeFromUtc(
         dateStr,
         timeArr,
-        gpsDisplayOffset
+        gpsDisplayOffset,
       );
       if (localGpsDateTime) {
         const localDateTimeStr = `${localGpsDateTime.date.year}:${localGpsDateTime.date.month}:${localGpsDateTime.date.day} ${localGpsDateTime.time.hours}:${localGpsDateTime.time.minutes}:${localGpsDateTime.time.seconds}`;

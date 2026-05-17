@@ -290,20 +290,57 @@ form#fields,
   border-radius: 12px;
   background: #f8fafc;
 }
+.timestamp-panel,
 .dimensions-panel {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px;
+  gap: 12px;
+  padding: 0;
   border: 1px solid #e5e7eb;
-  border-radius: 12px;
+  border-radius: 8px;
   background: #f8fafc;
+}
+.timestamp-summary,
+.dimensions-summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  list-style-position: inside;
+}
+.timestamp-panel[open] .timestamp-summary,
+.dimensions-panel[open] .dimensions-summary {
+  border-bottom: 1px solid #e5e7eb;
+}
+.timestamp-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+.timestamp-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+}
+.timestamp-toggle input {
+  width: 16px;
+  height: 16px;
+}
+.timestamp-address-input {
+  width: 100%;
+  min-width: 0;
 }
 .dimensions-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
   align-items: end;
+  padding: 0 14px 14px;
 }
 .dimension-field {
   display: flex;
