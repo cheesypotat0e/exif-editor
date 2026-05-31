@@ -882,6 +882,34 @@ body.map-fullscreen-open {
   overflow: hidden;
 }
 
+.text-field-container {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.text-field-container input {
+  flex: 1;
+  min-width: 0;
+}
+.preset-select {
+  font-family: inherit;
+  font-size: 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  color: #111;
+  cursor: pointer;
+  width: 140px;
+  min-width: 140px;
+  box-sizing: border-box;
+}
+.preset-select:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+  border-color: #2563eb;
+}
+
 @media (max-width: 720px) {
   .card {
     padding: 18px;

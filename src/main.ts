@@ -13,7 +13,7 @@ type IDF = {
   tag: number;
 };
 
-type EXIFField = {
+export type EXIFField = {
   label: string;
   name: string;
   ifd: string;
@@ -21,7 +21,7 @@ type EXIFField = {
   count: number;
   valueOffset: number;
   value: number | string | number[];
-  type: "date" | "datetime" | "time" | "coordinate" | "number";
+  type: "date" | "datetime" | "time" | "coordinate" | "number" | "text";
   // Optional fields for combined GPS datetime
   _gpsDateTag?: number;
   _gpsDateOffset?: number;
@@ -65,7 +65,7 @@ type DateTimePickerState = {
   subSeconds?: string;
 };
 
-type LoadedFile = {
+export type LoadedFile = {
   id: string;
   filename: string;
   originalFilename: string;
@@ -144,6 +144,7 @@ type GeocodeCacheEntry = {
 const TAGS = {
   DateTime: 0x0132, // Image IFD
   ModifyDate: 0x0132, // alias for Image DateTime in many EXIF tools
+  Software: 0x0131, // Software / Program Name tag
   ExifIFDPointer: 0x8769, // pointer from 0th to Exif
   GPSInfoIFDPointer: 0x8825, // pointer from 0th to GPS
   GPSLatitudeRef: 0x0001,
@@ -3184,7 +3185,7 @@ function setupGpsEditor(file: LoadedFile) {
   updateMarkerPosition();
 }
 
-function renderFields(file: LoadedFile, form: HTMLFormElement) {
+export function renderFields(file: LoadedFile, form: HTMLFormElement) {
   form.innerHTML = "";
   updateSyncButtonVisibility(file);
 
@@ -3202,6 +3203,7 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
     GPSAltitude: 6,
     GPSDateStamp: 7,
     GPSTimeStamp: 8,
+    Software: 9,
   };
 
   const fieldEntries = file.parsedFields
@@ -3259,7 +3261,59 @@ function renderFields(file: LoadedFile, form: HTMLFormElement) {
 
     let control: HTMLElement;
 
-    if (f.type === "date") {
+    if (f.type === "text") {
+      const container = document.createElement("div");
+      container.className = "text-field-container";
+
+      const input = document.createElement("input");
+      input.type = "text";
+      input.dataset.fieldInput = "true";
+      input.dataset.idx = idx.toString();
+      input.id = `field-${idx}`;
+      input.value = f.value as string;
+      input.maxLength = f.count - 1;
+      label.htmlFor = input.id;
+
+      const select = document.createElement("select");
+      select.className = "preset-select";
+      select.setAttribute("aria-label", "Program name presets");
+
+      const placeholderOpt = document.createElement("option");
+      placeholderOpt.value = "";
+      placeholderOpt.textContent = "Presets...";
+      placeholderOpt.disabled = true;
+      placeholderOpt.selected = true;
+      select.appendChild(placeholderOpt);
+
+      const presets = [
+        { label: "Clear / Empty", value: "" },
+        { label: "Adobe Photoshop", value: "Adobe Photoshop" },
+        { label: "Adobe Lightroom", value: "Adobe Photoshop Lightroom" },
+        { label: "GIMP", value: "GIMP 2.10" },
+        { label: "Apple iOS", value: "iOS" },
+        { label: "Google Android", value: "Android" },
+      ];
+
+      presets.forEach((preset) => {
+        const opt = document.createElement("option");
+        opt.value = preset.value;
+        opt.textContent = preset.label;
+        select.appendChild(opt);
+      });
+
+      select.addEventListener("change", () => {
+        input.value = select.value;
+        if (input.value.length > input.maxLength) {
+          input.value = input.value.substring(0, input.maxLength);
+        }
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        select.selectedIndex = 0;
+      });
+
+      container.appendChild(input);
+      container.appendChild(select);
+      control = container;
+    } else if (f.type === "date") {
       const input = document.createElement("input");
       input.type = "date";
       input.dataset.fieldInput = "true";
@@ -4112,7 +4166,7 @@ function fromInputTime(val: string): number[] {
   return parts;
 }
 
-function applyFormToWorkingBuffer(file: LoadedFile) {
+export function applyFormToWorkingBuffer(file: LoadedFile) {
   if (!file.elements) {
     return;
   }
@@ -4134,7 +4188,9 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
 
     let newVal: string | number[];
 
-    if (field.type === "date") {
+    if (field.type === "text") {
+      newVal = inp.value;
+    } else if (field.type === "date") {
       // Use the original fromInputDate function
       newVal = fromInputDate(inp.value);
 
@@ -4304,7 +4360,7 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
       }
     }
 
-    if (newVal.length === 0) {
+    if (newVal.length === 0 && field.type !== "text") {
       return; // skip
     }
 
@@ -4357,7 +4413,7 @@ function applyFormToWorkingBuffer(file: LoadedFile) {
 }
 
 // ---------- EXIF parsing (custom, minimal, only to find & edit ASCII date/time tags) ----------
-function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
+export function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
   const view = new DataView(arrayBuffer);
 
   if (view.getUint16(0, false) !== TAGS.JPEG_START) {
@@ -4625,6 +4681,20 @@ function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
 
   // read 0th IFD
   const ifd0 = readIFD(firstIFDOffset);
+
+  const softwareEntry = ifd0.entries.get(TAGS.Software);
+  if (softwareEntry) {
+    results.push({
+      label: "Program name",
+      name: "Software",
+      ifd: "0th",
+      tag: TAGS.Software,
+      count: softwareEntry.count,
+      valueOffset: softwareEntry.valueOffset,
+      value: softwareEntry.value,
+      type: "text",
+    });
+  }
 
   // check pointers to Exif and GPS
   let exifIFDOffset = null;
