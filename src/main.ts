@@ -4288,6 +4288,7 @@ export function applyFormToWorkingBuffer(file: LoadedFile) {
       dv.setUint32(abs + 12, 1, littleEndian);
       dv.setUint32(abs + 16, secondsScaled, littleEndian);
       dv.setUint32(abs + 20, 1000000, littleEndian);
+      field.value = decimal;
       return;
     } else if (field.type === "number") {
       const value = Number(inp.value);
@@ -4302,6 +4303,7 @@ export function applyFormToWorkingBuffer(file: LoadedFile) {
       if (field._gpsAltitudeRefOffset !== undefined) {
         dv.setUint8(field._gpsAltitudeRefOffset, value < 0 ? 1 : 0);
       }
+      field.value = value;
       return;
     } else {
       // Use the original fromInputDateTime function
@@ -4400,6 +4402,7 @@ export function applyFormToWorkingBuffer(file: LoadedFile) {
       for (let i = 0; i < count; i++) {
         dv.setUint8(abs + i, bytes[i]);
       }
+      field.value = new TextDecoder().decode(encoded.subarray(0, len));
     } else if (Array.isArray(target)) {
       // This handles both GPSTimeStamp and the time component of GPSDateTime
       for (let i = 0; i < count; i++) {
@@ -4408,6 +4411,7 @@ export function applyFormToWorkingBuffer(file: LoadedFile) {
         dv.setUint32(abs, target[i], littleEndian);
         dv.setUint32(abs + 4, 1, littleEndian);
       }
+      field.value = target.slice(0, count);
     }
   });
 }

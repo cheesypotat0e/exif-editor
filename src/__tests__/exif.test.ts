@@ -125,6 +125,7 @@ describe('EXIF parser and applyFormToWorkingBuffer tests', () => {
     let mockFile: any;
     let form: HTMLFormElement;
     let softwareInput: HTMLInputElement;
+    let softwareIdx: number;
 
     beforeEach(() => {
       const originalBuffer = getSampleBuffer('IMG_2865.JPG');
@@ -135,7 +136,7 @@ describe('EXIF parser and applyFormToWorkingBuffer tests', () => {
       // Create a mock form element and input for the Software tag
       form = document.createElement('form');
       
-      const softwareIdx = parsedFields.findIndex((f: any) => f.name === 'Software');
+      softwareIdx = parsedFields.findIndex((f: any) => f.name === 'Software');
       expect(softwareIdx).not.toBe(-1);
 
       softwareInput = document.createElement('input');
@@ -162,6 +163,8 @@ describe('EXIF parser and applyFormToWorkingBuffer tests', () => {
 
       applyFormToWorkingBuffer(mockFile);
 
+      expect(mockFile.parsedFields[softwareIdx].value).toBe('MyEditor');
+
       // Re-parse from workingBuffer to verify updates
       const updatedFields = parseExifDates(mockFile.workingBuffer);
       const updatedSoftware = updatedFields.find((f: any) => f.name === 'Software');
@@ -172,6 +175,8 @@ describe('EXIF parser and applyFormToWorkingBuffer tests', () => {
       softwareInput.value = '';
 
       applyFormToWorkingBuffer(mockFile);
+
+      expect(mockFile.parsedFields[softwareIdx].value).toBe('');
 
       const updatedFields = parseExifDates(mockFile.workingBuffer);
       const updatedSoftware = updatedFields.find((f: any) => f.name === 'Software');
@@ -184,6 +189,8 @@ describe('EXIF parser and applyFormToWorkingBuffer tests', () => {
       softwareInput.value = 'A very long software name';
 
       applyFormToWorkingBuffer(mockFile);
+
+      expect(mockFile.parsedFields[softwareIdx].value).toBe('A very long ');
 
       const updatedFields = parseExifDates(mockFile.workingBuffer);
       const updatedSoftware = updatedFields.find((f: any) => f.name === 'Software');
