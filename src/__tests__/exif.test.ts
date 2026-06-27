@@ -199,6 +199,27 @@ describe('EXIF parser and applyFormToWorkingBuffer tests', () => {
       expect(updatedSoftware.value.length).toBe(12);
     });
 
+    it('should preserve renderable GPS and Software field values after applying the form', () => {
+      const gpsDateTimeIdx = mockFile.parsedFields.findIndex(
+        (f: any) => f.name === 'GPSDateTime'
+      );
+      expect(gpsDateTimeIdx).not.toBe(-1);
+
+      const gpsDateTimeInput = document.createElement('input');
+      gpsDateTimeInput.setAttribute('data-field-input', 'true');
+      gpsDateTimeInput.setAttribute('data-idx', String(gpsDateTimeIdx));
+      gpsDateTimeInput.value = '2026-05-30T11:21:31';
+      form.appendChild(gpsDateTimeInput);
+      softwareInput.value = 'MyEditor';
+
+      applyFormToWorkingBuffer(mockFile);
+
+      expect(mockFile.parsedFields[gpsDateTimeIdx].value).toBe(
+        '2026:05:30 11:21:31'
+      );
+      expect(mockFile.parsedFields[softwareIdx].value).toBe('MyEditor');
+    });
+
     it('should update dates (ModifyDate, DateTimeOriginal, CreateDate) via applyFormToWorkingBuffer', () => {
       // Find indices
       const modifyDateIdx = mockFile.parsedFields.findIndex((f: any) => f.name === 'ModifyDate');

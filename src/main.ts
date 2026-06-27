@@ -4411,7 +4411,10 @@ export function applyFormToWorkingBuffer(file: LoadedFile) {
         dv.setUint32(abs, target[i], littleEndian);
         dv.setUint32(abs + 4, 1, littleEndian);
       }
-      field.value = target.slice(0, count);
+      field.value =
+        field.type === "datetime" && field.name === "GPSDateTime"
+          ? fromInputDateTime(inp.value)
+          : target.slice(0, count);
     }
   });
 }
