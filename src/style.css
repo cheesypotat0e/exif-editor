@@ -291,7 +291,8 @@ form#fields,
   background: #f8fafc;
 }
 .timestamp-panel,
-.dimensions-panel {
+.dimensions-panel,
+.device-panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -301,7 +302,8 @@ form#fields,
   background: #f8fafc;
 }
 .timestamp-summary,
-.dimensions-summary {
+.dimensions-summary,
+.device-summary {
   cursor: pointer;
   padding: 12px 14px;
   color: #334155;
@@ -310,7 +312,8 @@ form#fields,
   list-style-position: inside;
 }
 .timestamp-panel[open] .timestamp-summary,
-.dimensions-panel[open] .dimensions-summary {
+.dimensions-panel[open] .dimensions-summary,
+.device-panel[open] .device-summary {
   border-bottom: 1px solid #e5e7eb;
 }
 .timestamp-grid {
@@ -362,6 +365,41 @@ form#fields,
 .dimension-lock input {
   width: 16px;
   height: 16px;
+}
+.device-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+.device-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+.device-field:has(.device-select),
+.device-field:has(input[aria-label="Lens model"]) {
+  grid-column: 1 / -1;
+}
+.device-select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  color: #111827;
+  font: inherit;
+  font-size: 14px;
+}
+.device-field input:disabled {
+  background: #eef2f7;
+  color: #475569;
+  opacity: 1;
+  cursor: not-allowed;
 }
 .metadata-heading-row {
   display: flex;
@@ -953,6 +991,15 @@ body.map-fullscreen-open {
   .row {
     grid-template-columns: 1fr;
     row-gap: 10px;
+  }
+
+  .device-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .device-field:has(.device-select),
+  .device-field:has(input[aria-label="Lens model"]) {
+    grid-column: auto;
   }
 
   .gps-search-row {

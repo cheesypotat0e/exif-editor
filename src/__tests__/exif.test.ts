@@ -3,6 +3,9 @@ import * as path from 'path';
 
 let parseExifDates: any;
 let applyFormToWorkingBuffer: any;
+let parseDeviceMetadata: any;
+let applyDevicePresetToBuffer: any;
+let getMatchingDevicePreset: any;
 
 beforeAll(async () => {
   // Set up mock DOM elements required for main.ts import side-effects
@@ -20,6 +23,9 @@ beforeAll(async () => {
   const main = await import('../main');
   parseExifDates = main.parseExifDates;
   applyFormToWorkingBuffer = main.applyFormToWorkingBuffer;
+  parseDeviceMetadata = main.parseDeviceMetadata;
+  applyDevicePresetToBuffer = main.applyDevicePresetToBuffer;
+  getMatchingDevicePreset = main.getMatchingDevicePreset;
 });
 
 describe('EXIF parser and applyFormToWorkingBuffer tests', () => {
@@ -118,6 +124,83 @@ describe('EXIF parser and applyFormToWorkingBuffer tests', () => {
       view.setUint16(12, 0x4949); // LITTLE_ENDIAN
       view.setUint16(14, 99); // Invalid TIFF header (not 42)
       expect(() => parseExifDates(buffer)).toThrow('Invalid TIFF header');
+    });
+  });
+
+  describe('Device metadata presets', () => {
+    it('parses the standardized device and lens fields', () => {
+      const metadata = parseDeviceMetadata(getSampleBuffer('IMG_2619.JPG'));
+
+      expect(metadata).toMatchObject({
+        make: 'Apple',
+        model: 'iPhone 17 Pro Max',
+        hostComputer: 'iPhone 17 Pro Max',
+        lensMake: 'Apple',
+        lensModel: 'iPhone 17 Pro Max back triple camera 6.765mm f/1.78',
+        focalLengthIn35mmFormat: 24,
+      });
+      expect(metadata.lensSpecification).toHaveLength(4);
+      expect(getMatchingDevicePreset(metadata)).toBeUndefined();
+    });
+
+    it('rewrites every preset field while preserving a parseable JPEG and unrelated EXIF', () => {
+      const original = getSampleBuffer('IMG_2619.JPG');
+      const originalDates = parseExifDates(original);
+      const updated = applyDevicePresetToBuffer(original, 'iphone-15-pro');
+      const metadata = parseDeviceMetadata(updated);
+      const updatedDates = parseExifDates(updated);
+      const bytes = new Uint8Array(updated);
+
+      expect(metadata).toMatchObject({
+        make: 'Apple',
+        model: 'iPhone 15 Pro',
+        hostComputer: 'iPhone 15 Pro',
+        lensMake: 'Apple',
+        lensModel: 'iPhone 15 Pro back triple camera 2.22mm f/2.2',
+        focalLengthIn35mmFormat: 24,
+      });
+      expect(metadata.lensSpecification[0]).toBeCloseTo(2.2200000286);
+      expect(metadata.lensSpecification[1]).toBe(9);
+      expect(metadata.lensSpecification[2]).toBeCloseTo(1.7799999714);
+      expect(metadata.lensSpecification[3]).toBe(2.8);
+      expect(getMatchingDevicePreset(metadata)?.id).toBe('iphone-15-pro');
+      expect(updatedDates.find((field: any) => field.name === 'ModifyDate')?.value)
+        .toBe(originalDates.find((field: any) => field.name === 'ModifyDate')?.value);
+      expect(bytes[0]).toBe(0xff);
+      expect(bytes[1]).toBe(0xd8);
+      expect(bytes[bytes.length - 2]).toBe(0xff);
+      expect(bytes[bytes.length - 1]).toBe(0xd9);
+    });
+
+    it('supports expansion from a shorter device name to a longer one without truncation', () => {
+      const iphone15 = applyDevicePresetToBuffer(
+        getSampleBuffer('IMG_2619.JPG'),
+        'iphone-15-pro',
+      );
+      const iphone17 = applyDevicePresetToBuffer(
+        iphone15,
+        'iphone-17-pro-max',
+      );
+      const metadata = parseDeviceMetadata(iphone17);
+
+      expect(metadata.model).toBe('iPhone 17 Pro Max');
+      expect(metadata.hostComputer).toBe('iPhone 17 Pro Max');
+      expect(metadata.lensModel).toBe(
+        'iPhone 17 Pro Max back triple camera 2.22mm f/2.2',
+      );
+      expect(metadata.focalLengthIn35mmFormat).toBe(25);
+      expect(metadata.lensSpecification[1]).toBeCloseTo(16.890625);
+      expect(metadata.lensSpecification[3]).toBeCloseTo(2.798828125);
+      expect(getMatchingDevicePreset(metadata)?.id).toBe('iphone-17-pro-max');
+    });
+
+    it('rejects unknown presets', () => {
+      expect(() =>
+        applyDevicePresetToBuffer(
+          getSampleBuffer('IMG_2619.JPG'),
+          'not-a-device',
+        ),
+      ).toThrow('Unknown device preset');
     });
   });
 

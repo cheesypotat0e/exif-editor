@@ -13,6 +13,28 @@ type IDF = {
   tag: number;
 };
 
+type RationalValue = {
+  numerator: number;
+  denominator: number;
+};
+
+export type DeviceMetadata = {
+  make?: string;
+  model?: string;
+  hostComputer?: string;
+  lensMake?: string;
+  lensModel?: string;
+  lensSpecification?: number[];
+  focalLengthIn35mmFormat?: number;
+};
+
+export type DevicePreset = {
+  id: string;
+  label: string;
+  metadata: Required<DeviceMetadata>;
+  lensSpecificationRationals: RationalValue[];
+};
+
 export type EXIFField = {
   label: string;
   name: string;
@@ -90,6 +112,9 @@ export type LoadedFile = {
     dimensionWidthInput: HTMLInputElement;
     dimensionHeightInput: HTMLInputElement;
     dimensionLockInput: HTMLInputElement;
+    devicePanel: HTMLDetailsElement;
+    deviceSelect: HTMLSelectElement;
+    devicePropertyInputs: HTMLInputElement[];
     gpsEditor: HTMLDivElement;
     gpsMapChrome: HTMLDivElement;
     gpsSearchRow: HTMLDivElement;
@@ -142,9 +167,12 @@ type GeocodeCacheEntry = {
 
 // EXIF tag numbers we care about
 const TAGS = {
+  Make: 0x010f,
+  Model: 0x0110,
   DateTime: 0x0132, // Image IFD
   ModifyDate: 0x0132, // alias for Image DateTime in many EXIF tools
   Software: 0x0131, // Software / Program Name tag
+  HostComputer: 0x013c,
   ExifIFDPointer: 0x8769, // pointer from 0th to Exif
   GPSInfoIFDPointer: 0x8825, // pointer from 0th to GPS
   GPSLatitudeRef: 0x0001,
@@ -155,6 +183,10 @@ const TAGS = {
   GPSAltitude: 0x0006,
   ExifImageWidth: 0xa002,
   ExifImageHeight: 0xa003,
+  FocalLengthIn35mmFilm: 0xa405,
+  LensSpecification: 0xa432,
+  LensMake: 0xa433,
+  LensModel: 0xa434,
   DateTimeOriginal: 0x9003, // Exif
   CreateDate: 0x9004, // alias for DateTimeDigitized
   DateTimeDigitized: 0x9004, // Exif
@@ -178,6 +210,49 @@ const TAGS = {
   BIG_ENDIAN: 0x4d4d,
   JPEG_START: 0xffd8, // JPEG start
 };
+
+export const DEVICE_PRESETS: DevicePreset[] = [
+  {
+    id: "iphone-15-pro",
+    label: "iPhone 15 Pro",
+    metadata: {
+      make: "Apple",
+      model: "iPhone 15 Pro",
+      hostComputer: "iPhone 15 Pro",
+      lensMake: "Apple",
+      lensModel: "iPhone 15 Pro back triple camera 2.22mm f/2.2",
+      lensSpecification: [2.220000028611935, 9, 1.7799999713880652, 2.8],
+      focalLengthIn35mmFormat: 24,
+    },
+    lensSpecificationRationals: [
+      { numerator: 1551800, denominator: 699009 },
+      { numerator: 9, denominator: 1 },
+      { numerator: 1244236, denominator: 699009 },
+      { numerator: 14, denominator: 5 },
+    ],
+  },
+  {
+    id: "iphone-17-pro-max",
+    label: "iPhone 17 Pro Max",
+    metadata: {
+      make: "Apple",
+      model: "iPhone 17 Pro Max",
+      hostComputer: "iPhone 17 Pro Max",
+      lensMake: "Apple",
+      lensModel: "iPhone 17 Pro Max back triple camera 2.22mm f/2.2",
+      lensSpecification: [
+        2.220000028611935, 16.890625, 1.7799999713880652, 2.798828125,
+      ],
+      focalLengthIn35mmFormat: 25,
+    },
+    lensSpecificationRationals: [
+      { numerator: 1551800, denominator: 699009 },
+      { numerator: 1081, denominator: 64 },
+      { numerator: 1244236, denominator: 699009 },
+      { numerator: 1433, denominator: 512 },
+    ],
+  },
+];
 
 // State
 let activeDateTimePicker: DateTimePickerState | null = null;
@@ -3661,6 +3736,68 @@ function clearXmpMetadata(file: LoadedFile) {
   )} for export.`;
 }
 
+const DEVICE_PROPERTY_DEFINITIONS: Array<{
+  label: string;
+  getValue: (metadata: DeviceMetadata) => string;
+}> = [
+  { label: "Manufacturer", getValue: (metadata) => metadata.make ?? "" },
+  { label: "Model", getValue: (metadata) => metadata.model ?? "" },
+  {
+    label: "Host computer",
+    getValue: (metadata) => metadata.hostComputer ?? "",
+  },
+  {
+    label: "Lens manufacturer",
+    getValue: (metadata) => metadata.lensMake ?? "",
+  },
+  { label: "Lens model", getValue: (metadata) => metadata.lensModel ?? "" },
+  {
+    label: "35mm equivalent focal length",
+    getValue: (metadata) =>
+      metadata.focalLengthIn35mmFormat === undefined
+        ? ""
+        : `${metadata.focalLengthIn35mmFormat} mm`,
+  },
+  {
+    label: "Lens specification",
+    getValue: (metadata) =>
+      metadata.lensSpecification
+        ?.map((value) => Number(value.toFixed(6)).toString())
+        .join(", ") ?? "",
+  },
+];
+
+function updateDevicePanel(file: LoadedFile) {
+  if (!file.elements) {
+    return;
+  }
+  const { devicePanel, deviceSelect, devicePropertyInputs } = file.elements;
+  const summary = devicePanel.querySelector("summary");
+
+  try {
+    const metadata = parseDeviceMetadata(file.workingBuffer);
+    const matchingPreset = getMatchingDevicePreset(metadata);
+    if (summary) {
+      summary.textContent = `Device: ${metadata.model ?? "Unknown"}`;
+    }
+    deviceSelect.disabled = !metadata.model;
+    deviceSelect.value = matchingPreset?.id ?? "";
+    devicePropertyInputs.forEach((input, index) => {
+      input.value =
+        DEVICE_PROPERTY_DEFINITIONS[index]?.getValue(metadata) ?? "";
+    });
+  } catch {
+    if (summary) {
+      summary.textContent = "Device: No EXIF device metadata";
+    }
+    deviceSelect.value = "";
+    deviceSelect.disabled = true;
+    devicePropertyInputs.forEach((input) => {
+      input.value = "";
+    });
+  }
+}
+
 function appendFileEditor(file: LoadedFile) {
   const container = document.createElement("div");
   const meta = document.createElement("div");
@@ -3697,6 +3834,14 @@ function appendFileEditor(file: LoadedFile) {
   const dimensionLockRow = document.createElement("label");
   const dimensionLockInput = document.createElement("input");
   const dimensionResetButton = document.createElement("button");
+  const devicePanel = document.createElement("details");
+  const deviceSummary = document.createElement("summary");
+  const deviceGrid = document.createElement("div");
+  const deviceSelectRow = document.createElement("label");
+  const deviceSelect = document.createElement("select");
+  const devicePropertyInputs = DEVICE_PROPERTY_DEFINITIONS.map(() =>
+    document.createElement("input"),
+  );
   const form = document.createElement("form");
   const gpsEditorEl = document.createElement("div");
   const gpsMapChrome = document.createElement("div");
@@ -3801,6 +3946,39 @@ function appendFileEditor(file: LoadedFile) {
   dimensionResetButton.type = "button";
   dimensionResetButton.className = "ghost";
   dimensionResetButton.textContent = "Reset";
+  devicePanel.className = "device-panel";
+  deviceSummary.className = "device-summary";
+  deviceSummary.textContent = "Device";
+  deviceGrid.className = "device-grid";
+  deviceSelectRow.className = "device-field";
+  deviceSelectRow.textContent = "Device preset";
+  deviceSelect.className = "device-select";
+  deviceSelect.setAttribute("aria-label", "Device preset");
+  const customDeviceOption = document.createElement("option");
+  customDeviceOption.value = "";
+  customDeviceOption.textContent = "Choose a device preset…";
+  customDeviceOption.disabled = true;
+  deviceSelect.appendChild(customDeviceOption);
+  DEVICE_PRESETS.forEach((preset) => {
+    const option = document.createElement("option");
+    option.value = preset.id;
+    option.textContent = preset.label;
+    deviceSelect.appendChild(option);
+  });
+  devicePropertyInputs.forEach((input, index) => {
+    const row = document.createElement("label");
+    row.className = "device-field";
+    row.textContent = DEVICE_PROPERTY_DEFINITIONS[index]?.label ?? "";
+    input.type = "text";
+    input.disabled = true;
+    input.readOnly = true;
+    input.setAttribute(
+      "aria-label",
+      DEVICE_PROPERTY_DEFINITIONS[index]?.label ?? "Device property",
+    );
+    row.appendChild(input);
+    deviceGrid.appendChild(row);
+  });
   form.className = "file-fields";
   gpsEditorEl.className = "gps-editor";
   gpsEditorEl.style.display = "none";
@@ -3934,6 +4112,33 @@ function appendFileEditor(file: LoadedFile) {
     updateDimensionsSummary();
     schedulePreviewRefresh(file);
   });
+  deviceSelect.addEventListener("change", () => {
+    if (!deviceSelect.value) {
+      return;
+    }
+    try {
+      applyFormToWorkingBuffer(file);
+      file.workingBuffer = applyDevicePresetToBuffer(
+        file.workingBuffer,
+        deviceSelect.value,
+      );
+      file.parsedFields = parseExifDates(file.workingBuffer);
+      renderFields(file, form);
+      updateDevicePanel(file);
+      status.textContent = `Applied ${
+        DEVICE_PRESETS.find((preset) => preset.id === deviceSelect.value)
+          ?.label ?? "device"
+      } metadata to ${getDownloadFilename(file)}.`;
+      schedulePreviewRefresh(file);
+    } catch (error) {
+      console.error(error);
+      status.textContent =
+        error instanceof Error
+          ? error.message
+          : "Could not update the device metadata.";
+      updateDevicePanel(file);
+    }
+  });
   syncButton.addEventListener("click", () =>
     syncDateTimeFieldsToOriginal(file),
   );
@@ -4011,6 +4216,10 @@ function appendFileEditor(file: LoadedFile) {
   dimensionsGrid.appendChild(dimensionResetButton);
   dimensionsPanel.appendChild(dimensionsHeading);
   dimensionsPanel.appendChild(dimensionsGrid);
+  deviceSelectRow.appendChild(deviceSelect);
+  deviceGrid.prepend(deviceSelectRow);
+  devicePanel.appendChild(deviceSummary);
+  devicePanel.appendChild(deviceGrid);
   file.elements = {
     container,
     form,
@@ -4021,6 +4230,9 @@ function appendFileEditor(file: LoadedFile) {
     dimensionWidthInput,
     dimensionHeightInput,
     dimensionLockInput,
+    devicePanel,
+    deviceSelect,
+    devicePropertyInputs,
     gpsEditor: gpsEditorEl,
     gpsMapChrome,
     gpsSearchRow,
@@ -4058,6 +4270,7 @@ function appendFileEditor(file: LoadedFile) {
   gpsEditorEl.appendChild(gpsHintEl);
   editorPanel.appendChild(form);
   editorPanel.appendChild(gpsEditorEl);
+  editorPanel.appendChild(devicePanel);
   editorPanel.appendChild(timestampPanel);
   editorPanel.appendChild(dimensionsPanel);
   renderXmpPanel(file, xmpPanel);
@@ -4072,6 +4285,7 @@ function appendFileEditor(file: LoadedFile) {
   fileListEl.appendChild(container);
 
   renderFields(file, form);
+  updateDevicePanel(file);
   refreshLoadedFileControls();
 }
 
@@ -4417,6 +4631,392 @@ export function applyFormToWorkingBuffer(file: LoadedFile) {
           : target.slice(0, count);
     }
   });
+}
+
+type ExifRewriteEntry = {
+  entryOffset: number;
+  type: number;
+  count: number;
+  valueOffset: number;
+};
+
+type ExifRewriteContext = {
+  view: DataView;
+  littleEndian: boolean;
+  segmentStart: number;
+  segmentEnd: number;
+  segmentLength: number;
+  tiffStart: number;
+  ifd0: Map<number, ExifRewriteEntry>;
+  exif: Map<number, ExifRewriteEntry>;
+};
+
+function getTiffTypeSize(type: number) {
+  if (type === 1 || type === 2 || type === 7) {
+    return 1;
+  }
+  if (type === 3) {
+    return 2;
+  }
+  if (type === 4 || type === 9) {
+    return 4;
+  }
+  if (type === 5 || type === 10) {
+    return 8;
+  }
+  return 0;
+}
+
+function getDeviceExifContext(arrayBuffer: ArrayBuffer): ExifRewriteContext {
+  const view = new DataView(arrayBuffer);
+  if (
+    view.byteLength < 12 ||
+    view.getUint16(0, false) !== TAGS.JPEG_START
+  ) {
+    throw new Error("Not a JPEG");
+  }
+
+  let segmentStart = 2;
+  let segmentEnd = -1;
+  let segmentLength = 0;
+  let tiffStart = -1;
+
+  while (segmentStart + 4 <= view.byteLength) {
+    const marker = view.getUint16(segmentStart, false);
+    if (marker === TAGS.START_OF_SCAN || marker === TAGS.END_OF_IMAGE) {
+      break;
+    }
+    if ((marker & TAGS.VALID_MARKER_PREFIX) !== TAGS.VALID_MARKER_PREFIX) {
+      break;
+    }
+
+    segmentLength = view.getUint16(segmentStart + 2, false);
+    segmentEnd = segmentStart + 2 + segmentLength;
+    if (segmentLength < 2 || segmentEnd > view.byteLength) {
+      break;
+    }
+
+    const payloadStart = segmentStart + 4;
+    if (
+      marker === TAGS.APP1_MARKER &&
+      payloadStart + 6 <= segmentEnd &&
+      view.getUint32(payloadStart, false) === TAGS.EXIF_HEADER &&
+      view.getUint16(payloadStart + 4, false) === 0
+    ) {
+      tiffStart = payloadStart + 6;
+      break;
+    }
+    segmentStart = segmentEnd;
+  }
+
+  if (tiffStart < 0 || segmentEnd < 0) {
+    throw new Error("No EXIF APP1 segment found");
+  }
+
+  const byteOrder = view.getUint16(tiffStart, false);
+  const littleEndian = byteOrder === TAGS.LITTLE_ENDIAN;
+  if (!littleEndian && byteOrder !== TAGS.BIG_ENDIAN) {
+    throw new Error("Invalid TIFF byte order");
+  }
+  if (view.getUint16(tiffStart + 2, littleEndian) !== 42) {
+    throw new Error("Invalid TIFF header");
+  }
+
+  function readEntries(ifdOffset: number) {
+    const entries = new Map<number, ExifRewriteEntry>();
+    if (ifdOffset < tiffStart || ifdOffset + 2 > segmentEnd) {
+      return entries;
+    }
+
+    const count = view.getUint16(ifdOffset, littleEndian);
+    for (let index = 0; index < count; index++) {
+      const entryOffset = ifdOffset + 2 + index * 12;
+      if (entryOffset + 12 > segmentEnd) {
+        break;
+      }
+      const tag = view.getUint16(entryOffset, littleEndian);
+      const type = view.getUint16(entryOffset + 2, littleEndian);
+      const valueCount = view.getUint32(entryOffset + 4, littleEndian);
+      const byteLength = getTiffTypeSize(type) * valueCount;
+      const valueOffset =
+        byteLength <= 4
+          ? entryOffset + 8
+          : tiffStart + view.getUint32(entryOffset + 8, littleEndian);
+      if (valueOffset < tiffStart || valueOffset + byteLength > segmentEnd) {
+        continue;
+      }
+      entries.set(tag, {
+        entryOffset,
+        type,
+        count: valueCount,
+        valueOffset,
+      });
+    }
+    return entries;
+  }
+
+  const firstIfdOffset =
+    tiffStart + view.getUint32(tiffStart + 4, littleEndian);
+  const ifd0 = readEntries(firstIfdOffset);
+  const exifPointer = ifd0.get(TAGS.ExifIFDPointer);
+  const exifOffset =
+    exifPointer && typeof exifPointer.valueOffset === "number"
+      ? tiffStart +
+        view.getUint32(exifPointer.valueOffset, littleEndian)
+      : -1;
+  const exif = exifOffset >= tiffStart ? readEntries(exifOffset) : new Map();
+
+  return {
+    view,
+    littleEndian,
+    segmentStart,
+    segmentEnd,
+    segmentLength,
+    tiffStart,
+    ifd0,
+    exif,
+  };
+}
+
+function readExifAscii(
+  context: ExifRewriteContext,
+  entry?: ExifRewriteEntry,
+) {
+  if (!entry || entry.type !== 2) {
+    return undefined;
+  }
+  const bytes = new Uint8Array(
+    context.view.buffer,
+    entry.valueOffset,
+    entry.count,
+  );
+  const nullIndex = bytes.indexOf(0);
+  return new TextDecoder().decode(
+    nullIndex >= 0 ? bytes.subarray(0, nullIndex) : bytes,
+  );
+}
+
+function readExifRationals(
+  context: ExifRewriteContext,
+  entry?: ExifRewriteEntry,
+) {
+  if (!entry || (entry.type !== 5 && entry.type !== 10)) {
+    return undefined;
+  }
+  const values: number[] = [];
+  for (let index = 0; index < entry.count; index++) {
+    const offset = entry.valueOffset + index * 8;
+    const numerator =
+      entry.type === 10
+        ? context.view.getInt32(offset, context.littleEndian)
+        : context.view.getUint32(offset, context.littleEndian);
+    const denominator =
+      entry.type === 10
+        ? context.view.getInt32(offset + 4, context.littleEndian)
+        : context.view.getUint32(offset + 4, context.littleEndian);
+    values.push(denominator === 0 ? 0 : numerator / denominator);
+  }
+  return values;
+}
+
+function readExifUnsignedInteger(
+  context: ExifRewriteContext,
+  entry?: ExifRewriteEntry,
+) {
+  if (!entry || entry.count !== 1) {
+    return undefined;
+  }
+  if (entry.type === 3) {
+    return context.view.getUint16(entry.valueOffset, context.littleEndian);
+  }
+  if (entry.type === 4) {
+    return context.view.getUint32(entry.valueOffset, context.littleEndian);
+  }
+  return undefined;
+}
+
+export function parseDeviceMetadata(arrayBuffer: ArrayBuffer): DeviceMetadata {
+  const context = getDeviceExifContext(arrayBuffer);
+  return {
+    make: readExifAscii(context, context.ifd0.get(TAGS.Make)),
+    model: readExifAscii(context, context.ifd0.get(TAGS.Model)),
+    hostComputer: readExifAscii(
+      context,
+      context.ifd0.get(TAGS.HostComputer),
+    ),
+    lensMake: readExifAscii(context, context.exif.get(TAGS.LensMake)),
+    lensModel: readExifAscii(context, context.exif.get(TAGS.LensModel)),
+    lensSpecification: readExifRationals(
+      context,
+      context.exif.get(TAGS.LensSpecification),
+    ),
+    focalLengthIn35mmFormat: readExifUnsignedInteger(
+      context,
+      context.exif.get(TAGS.FocalLengthIn35mmFilm),
+    ),
+  };
+}
+
+export function getMatchingDevicePreset(metadata: DeviceMetadata) {
+  return DEVICE_PRESETS.find((preset) => {
+    const expected = preset.metadata;
+    const actualLensSpecification = metadata.lensSpecification;
+    return (
+      expected.make === metadata.make &&
+      expected.model === metadata.model &&
+      expected.hostComputer === metadata.hostComputer &&
+      expected.lensMake === metadata.lensMake &&
+      expected.lensModel === metadata.lensModel &&
+      expected.focalLengthIn35mmFormat ===
+        metadata.focalLengthIn35mmFormat &&
+      actualLensSpecification?.length ===
+        expected.lensSpecification.length &&
+      expected.lensSpecification.every(
+        (value, index) =>
+          Math.abs(value - (actualLensSpecification[index] ?? Infinity)) <
+          0.000001,
+      )
+    );
+  });
+}
+
+export function applyDevicePresetToBuffer(
+  arrayBuffer: ArrayBuffer,
+  presetId: string,
+) {
+  const preset = DEVICE_PRESETS.find((candidate) => candidate.id === presetId);
+  if (!preset) {
+    throw new Error(`Unknown device preset: ${presetId}`);
+  }
+
+  const context = getDeviceExifContext(arrayBuffer);
+  const encoder = new TextEncoder();
+  const replacements: Array<{
+    entry: ExifRewriteEntry;
+    bytes: Uint8Array;
+    alignment: number;
+  }> = [];
+
+  const addAsciiReplacement = (
+    entry: ExifRewriteEntry | undefined,
+    value: string,
+  ) => {
+    if (!entry || entry.type !== 2) {
+      return;
+    }
+    const encoded = encoder.encode(value);
+    const bytes = new Uint8Array(encoded.length + 1);
+    bytes.set(encoded);
+    replacements.push({ entry, bytes, alignment: 1 });
+  };
+
+  addAsciiReplacement(context.ifd0.get(TAGS.Make), preset.metadata.make);
+  addAsciiReplacement(context.ifd0.get(TAGS.Model), preset.metadata.model);
+  addAsciiReplacement(
+    context.ifd0.get(TAGS.HostComputer),
+    preset.metadata.hostComputer,
+  );
+  addAsciiReplacement(
+    context.exif.get(TAGS.LensMake),
+    preset.metadata.lensMake,
+  );
+  addAsciiReplacement(
+    context.exif.get(TAGS.LensModel),
+    preset.metadata.lensModel,
+  );
+
+  const lensSpecificationEntry = context.exif.get(TAGS.LensSpecification);
+  if (
+    lensSpecificationEntry &&
+    lensSpecificationEntry.type === 5 &&
+    lensSpecificationEntry.count ===
+      preset.lensSpecificationRationals.length
+  ) {
+    const bytes = new Uint8Array(
+      preset.lensSpecificationRationals.length * 8,
+    );
+    const rationalView = new DataView(bytes.buffer);
+    preset.lensSpecificationRationals.forEach((value, index) => {
+      rationalView.setUint32(
+        index * 8,
+        value.numerator,
+        context.littleEndian,
+      );
+      rationalView.setUint32(
+        index * 8 + 4,
+        value.denominator,
+        context.littleEndian,
+      );
+    });
+    replacements.push({
+      entry: lensSpecificationEntry,
+      bytes,
+      alignment: 4,
+    });
+  }
+
+  if (!context.ifd0.has(TAGS.Model)) {
+    throw new Error("The image has no EXIF camera model tag");
+  }
+
+  let appendedLength = 0;
+  const replacementOffsets = replacements.map((replacement) => {
+    const relativeOffset =
+      context.segmentEnd + appendedLength - context.tiffStart;
+    const padding =
+      (replacement.alignment - (relativeOffset % replacement.alignment)) %
+      replacement.alignment;
+    appendedLength += padding;
+    const offset = context.segmentEnd + appendedLength;
+    appendedLength += replacement.bytes.length;
+    return { ...replacement, offset };
+  });
+
+  const nextSegmentLength = context.segmentLength + appendedLength;
+  if (nextSegmentLength > 0xffff) {
+    throw new Error("The updated EXIF APP1 segment exceeds the JPEG limit");
+  }
+
+  const original = new Uint8Array(arrayBuffer);
+  const updated = new Uint8Array(original.length + appendedLength);
+  updated.set(original.subarray(0, context.segmentEnd), 0);
+  updated.set(
+    original.subarray(context.segmentEnd),
+    context.segmentEnd + appendedLength,
+  );
+  const updatedView = new DataView(updated.buffer);
+  updatedView.setUint16(context.segmentStart + 2, nextSegmentLength, false);
+
+  replacementOffsets.forEach(({ entry, bytes, offset }) => {
+    updated.set(bytes, offset);
+    updatedView.setUint32(
+      entry.entryOffset + 4,
+      entry.type === 2 ? bytes.length : entry.count,
+      context.littleEndian,
+    );
+    updatedView.setUint32(
+      entry.entryOffset + 8,
+      offset - context.tiffStart,
+      context.littleEndian,
+    );
+  });
+
+  const focalLengthEntry = context.exif.get(TAGS.FocalLengthIn35mmFilm);
+  if (focalLengthEntry?.count === 1 && focalLengthEntry.type === 3) {
+    updatedView.setUint16(
+      focalLengthEntry.entryOffset + 8,
+      preset.metadata.focalLengthIn35mmFormat,
+      context.littleEndian,
+    );
+  } else if (focalLengthEntry?.count === 1 && focalLengthEntry.type === 4) {
+    updatedView.setUint32(
+      focalLengthEntry.entryOffset + 8,
+      preset.metadata.focalLengthIn35mmFormat,
+      context.littleEndian,
+    );
+  }
+
+  return updated.buffer;
 }
 
 // ---------- EXIF parsing (custom, minimal, only to find & edit ASCII date/time tags) ----------
