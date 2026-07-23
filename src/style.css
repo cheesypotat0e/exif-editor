@@ -100,6 +100,17 @@ h2 {
   background: #fff;
   box-shadow: 0 6px 18px rgba(10, 10, 20, 0.04);
 }
+.import-pending {
+  min-height: 120px;
+  justify-content: center;
+}
+.import-pending-name {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.import-failed {
+  border-color: #dc2626;
+}
 .file-card-actions {
   display: flex;
   flex-wrap: wrap;
@@ -118,10 +129,10 @@ h2 {
   overflow: hidden;
 }
 img.preview {
-  width: 144px;
-  height: 108px;
+  max-width: 144px;
+  max-height: 192px;
   border-radius: 8px;
-  object-fit: cover;
+  object-fit: contain;
   display: block;
 }
 .meta {
@@ -311,6 +322,21 @@ form#fields,
   font-weight: 700;
   list-style-position: inside;
 }
+.timestamp-summary {
+  /* Keep summary as a list item so the native disclosure triangle remains. */
+  list-style-position: inside;
+}
+.timestamp-clipboard-actions {
+  display: inline-flex;
+  gap: 8px;
+  float: right;
+  margin-top: -7px;
+}
+.timestamp-paste-error {
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 600;
+}
 .timestamp-panel[open] .timestamp-summary,
 .dimensions-panel[open] .dimensions-summary,
 .device-panel[open] .device-summary {
@@ -485,6 +511,49 @@ form#fields,
   column-gap: 16px;
   row-gap: 10px;
   align-items: center;
+}
+.gps-coordinate-group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "label label"
+    "fields actions";
+  gap: 10px 14px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+.gps-coordinate-group-label {
+  grid-area: label;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.gps-coordinate-fields {
+  grid-area: fields;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.gps-coordinate-toolbar {
+  grid-area: actions;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+}
+.gps-coordinate-actions {
+  display: flex;
+  gap: 8px;
+}
+.clipboard-icon-button {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+}
+.clipboard-validation-error {
+  color: #b91c1c;
+  font-size: 13px;
+  line-height: 1.3;
 }
 label {
   font-weight: 600;
@@ -991,6 +1060,18 @@ body.map-fullscreen-open {
   .row {
     grid-template-columns: 1fr;
     row-gap: 10px;
+  }
+
+  .gps-coordinate-group {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "label"
+      "fields"
+      "actions";
+  }
+
+  .gps-coordinate-actions {
+    justify-content: flex-end;
   }
 
   .device-grid {

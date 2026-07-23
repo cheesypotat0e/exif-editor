@@ -4,6 +4,7 @@ module.exports = {
   setupFilesAfterEnv: ['<rootDir>/jest.setup.cjs'],
   moduleNameMapper: {
     '\\.css$': '<rootDir>/src/__mocks__/styleMock.js',
+    '\\?worker&inline$': '<rootDir>/src/__mocks__/workerMock.js',
     '\\.(png|jpg|jpeg|gif|webp|svg)\\?inline$': '<rootDir>/src/__mocks__/fileMock.js',
     '\\.(png|jpg|jpeg|gif|webp|svg)$': '<rootDir>/src/__mocks__/fileMock.js',
   },

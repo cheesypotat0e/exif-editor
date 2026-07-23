@@ -1,9 +1,9 @@
-import { FileReader } from "./FileReader";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import markerIconUrl from "leaflet/dist/images/marker-icon.png?inline";
 import markerIcon2xUrl from "leaflet/dist/images/marker-icon-2x.png?inline";
 import markerShadowUrl from "leaflet/dist/images/marker-shadow.png?inline";
+import ImageWorker from "./imageWorker?worker&inline";
 
 type IDF = {
   type: number;
@@ -60,6 +60,15 @@ type ImageDimensions = {
   height: number;
 };
 
+type JpegStructure = {
+  metadataRanges: Array<{
+    start: number;
+    end: number;
+    isXmp: boolean;
+  }>;
+  xmpRanges: Array<{ start: number; end: number }>;
+};
+
 type DateTimePickerState = {
   root: HTMLDivElement;
   hiddenInput: HTMLInputElement;
@@ -93,12 +102,20 @@ export type LoadedFile = {
   originalFilename: string;
   workingBuffer: ArrayBuffer;
   dimensions: ImageDimensions;
+  orientation?: number;
   parsedFields: EXIFField[];
   xmpMetadata?: XMPMetadata | null;
   xmpRemoved?: boolean;
+  jpegStructure?: JpegStructure;
   previewUrl: string;
+  thumbnailUrl?: string;
+  previewStateKey?: string;
   previewRefreshId?: number;
   previewRenderToken?: number;
+  previewJob?: {
+    worker: Worker;
+    reject: (reason?: unknown) => void;
+  };
   gpsMap?: L.Map | null;
   gpsMarker?: L.Marker | null;
   gpsTileLayer?: L.TileLayer | null;
@@ -108,6 +125,10 @@ export type LoadedFile = {
     timestampPanel: HTMLDetailsElement;
     timestampEnabledInput: HTMLInputElement;
     timestampAddressInputs: HTMLInputElement[];
+    applyTimestampLabelButton: HTMLButtonElement;
+    timestampCopyButton: HTMLButtonElement;
+    timestampPasteButton: HTMLButtonElement;
+    timestampPasteError: HTMLDivElement;
     dimensionsPanel: HTMLDetailsElement;
     dimensionWidthInput: HTMLInputElement;
     dimensionHeightInput: HTMLInputElement;
@@ -165,6 +186,14 @@ type GeocodeCacheEntry = {
   cachedAt: number;
 };
 
+type TimestampLabelLines = [string, string, string, string];
+
+type TimestampLabelState = {
+  id: string;
+  lines: TimestampLabelLines;
+  linkedPhotoIds: Set<string>;
+};
+
 // EXIF tag numbers we care about
 const TAGS = {
   Make: 0x010f,
@@ -183,6 +212,7 @@ const TAGS = {
   GPSAltitude: 0x0006,
   ExifImageWidth: 0xa002,
   ExifImageHeight: 0xa003,
+  Orientation: 0x0112,
   FocalLengthIn35mmFilm: 0xa405,
   LensSpecification: 0xa432,
   LensMake: 0xa433,
@@ -257,6 +287,10 @@ export const DEVICE_PRESETS: DevicePreset[] = [
 // State
 let activeDateTimePicker: DateTimePickerState | null = null;
 let loadedFiles: LoadedFile[] = [];
+let pendingImportCount = 0;
+const timestampLabelStates = new Map<string, TimestampLabelState>();
+const timestampLabelIdByPhotoId = new Map<string, string>();
+let timestampLabelStateSequence = 0;
 let internetReachable =
   typeof navigator === "undefined" ? true : navigator.onLine;
 
@@ -839,37 +873,28 @@ function getXmpSegmentRanges(arrayBuffer: ArrayBuffer) {
   return ranges;
 }
 
-function stripXmpSegments(arrayBuffer: ArrayBuffer) {
-  const ranges = getXmpSegmentRanges(arrayBuffer);
-  if (ranges.length === 0) {
-    return arrayBuffer;
+function createJpegBlobWithoutXmp(
+  arrayBuffer: ArrayBuffer,
+  cachedRanges?: Array<{ start: number; end: number }>,
+) {
+  const ranges = cachedRanges ?? getXmpSegmentRanges(arrayBuffer);
+  if (!ranges.length) {
+    return new Blob([arrayBuffer], { type: "image/jpeg" });
   }
 
   const bytes = new Uint8Array(arrayBuffer);
-  const keptParts: Uint8Array[] = [];
+  const parts: BlobPart[] = [];
   let cursor = 0;
-
   for (const range of ranges) {
     if (cursor < range.start) {
-      keptParts.push(bytes.slice(cursor, range.start));
+      parts.push(bytes.subarray(cursor, range.start));
     }
     cursor = range.end;
   }
-
   if (cursor < bytes.length) {
-    keptParts.push(bytes.slice(cursor));
+    parts.push(bytes.subarray(cursor));
   }
-
-  const totalLength = keptParts.reduce((sum, part) => sum + part.length, 0);
-  const result = new Uint8Array(totalLength);
-  let writeOffset = 0;
-
-  keptParts.forEach((part) => {
-    result.set(part, writeOffset);
-    writeOffset += part.length;
-  });
-
-  return result.buffer;
+  return new Blob(parts, { type: "image/jpeg" });
 }
 
 function getJpegSegmentEnd(bytes: Uint8Array, offset: number) {
@@ -895,9 +920,10 @@ function getJpegSegmentEnd(bytes: Uint8Array, offset: number) {
   return end <= bytes.length ? end : null;
 }
 
-function getJpegMetadataSegments(arrayBuffer: ArrayBuffer) {
+export function scanJpegStructure(arrayBuffer: ArrayBuffer): JpegStructure {
   const bytes = new Uint8Array(arrayBuffer);
-  const segments: Uint8Array[] = [];
+  const metadataRanges: JpegStructure["metadataRanges"] = [];
+  const xmpRanges: JpegStructure["xmpRanges"] = [];
   let offset = 2;
 
   while (offset + 4 <= bytes.length) {
@@ -905,20 +931,46 @@ function getJpegMetadataSegments(arrayBuffer: ArrayBuffer) {
     if (marker === TAGS.START_OF_SCAN || marker === TAGS.END_OF_IMAGE) {
       break;
     }
-
     const segmentEnd = getJpegSegmentEnd(bytes, offset);
     if (segmentEnd === null) {
       break;
     }
-
     if (marker === TAGS.APP1_MARKER || marker === TAGS.APP2_MARKER) {
-      segments.push(bytes.slice(offset, segmentEnd));
+      const segment = bytes.subarray(offset, segmentEnd);
+      const isXmp = isXmpMetadataSegment(segment);
+      metadataRanges.push({ start: offset, end: segmentEnd, isXmp });
+      if (isXmp) {
+        xmpRanges.push({ start: offset, end: segmentEnd });
+      }
     }
-
     offset = segmentEnd;
   }
 
-  return segments;
+  return { metadataRanges, xmpRanges };
+}
+
+function getFileMetadataSegments(file: LoadedFile) {
+  if (!file.jpegStructure) {
+    file.jpegStructure = scanJpegStructure(file.workingBuffer);
+  }
+  const bytes = new Uint8Array(file.workingBuffer);
+  return file.jpegStructure.metadataRanges
+    .filter((range) => !file.xmpRemoved || !range.isXmp)
+    .map((range) => bytes.subarray(range.start, range.end));
+}
+
+function isXmpMetadataSegment(segment: Uint8Array) {
+  if (segment.length < 8) {
+    return false;
+  }
+  const xmpHeader = "http://ns.adobe.com/xap/1.0/\0";
+  const payloadStart = 4;
+  return (
+    ((segment[0] << 8) | segment[1]) === TAGS.APP1_MARKER &&
+    new TextDecoder().decode(
+      segment.subarray(payloadStart, payloadStart + xmpHeader.length),
+    ) === xmpHeader
+  );
 }
 
 function getJpegMetadataInsertionOffset(arrayBuffer: ArrayBuffer) {
@@ -996,6 +1048,49 @@ function dimensionsChanged(a: ImageDimensions, b: ImageDimensions) {
   return a.width !== b.width || a.height !== b.height;
 }
 
+function orientationSwapsDimensions(orientation: number) {
+  return orientation >= 5 && orientation <= 8;
+}
+
+export function getDisplayDimensions(
+  dimensions: ImageDimensions,
+  orientation: number,
+) {
+  return orientationSwapsDimensions(orientation)
+    ? { width: dimensions.height, height: dimensions.width }
+    : dimensions;
+}
+
+export function getContainedDimensions(
+  dimensions: ImageDimensions,
+  maxWidth: number,
+  maxHeight: number,
+) {
+  if (dimensions.width < 1 || dimensions.height < 1) {
+    return { width: maxWidth, height: Math.round(maxWidth * 0.75) };
+  }
+  const scale = Math.min(
+    1,
+    maxWidth / dimensions.width,
+    maxHeight / dimensions.height,
+  );
+  return {
+    width: Math.max(1, Math.round(dimensions.width * scale)),
+    height: Math.max(1, Math.round(dimensions.height * scale)),
+  };
+}
+
+function sizePreviewImage(
+  image: HTMLImageElement,
+  dimensions: ImageDimensions,
+) {
+  const contained = getContainedDimensions(dimensions, 144, 192);
+  image.width = contained.width;
+  image.height = contained.height;
+  image.style.width = `${contained.width}px`;
+  image.style.height = `${contained.height}px`;
+}
+
 function getTimestampAddressLines(file: LoadedFile) {
   return (
     file.elements?.timestampAddressInputs
@@ -1003,6 +1098,27 @@ function getTimestampAddressLines(file: LoadedFile) {
       .filter((line) => line !== "")
       .slice(0, 4) ?? []
   );
+}
+
+/**
+ * The timestamp overlay has four address fields. Clipboard values deliberately
+ * use a small, predictable format: one to four non-empty lines (with CRLF
+ * accepted), and no extra lines. We do not try to validate postal addresses.
+ */
+function parseTimestampAddressClipboard(value: string): string[] | null {
+  const lines = value.replace(/\r\n?/g, "\n").split("\n");
+  if (lines.at(-1) === "") {
+    lines.pop();
+  }
+  const trimmed = lines.map((line) => line.trim());
+  if (
+    trimmed.length < 1 ||
+    trimmed.length > 4 ||
+    trimmed.some((line) => line.length === 0)
+  ) {
+    return null;
+  }
+  return trimmed;
 }
 
 function getTimestampDate(file: LoadedFile) {
@@ -1030,6 +1146,405 @@ function isTimestampOverlayEnabled(file: LoadedFile) {
   return file.elements?.timestampEnabledInput.checked === true;
 }
 
+function getTimestampLabelLines(file: LoadedFile): TimestampLabelLines {
+  const values =
+    file.elements?.timestampAddressInputs.map((input) => input.value) ?? [];
+  return [values[0] ?? "", values[1] ?? "", values[2] ?? "", values[3] ?? ""];
+}
+
+function timestampLabelHasContent(lines: TimestampLabelLines) {
+  return lines.some((line) => line.trim() !== "");
+}
+
+function getTimestampLabelStateForPhoto(fileId: string) {
+  const labelId = timestampLabelIdByPhotoId.get(fileId);
+  return labelId ? (timestampLabelStates.get(labelId) ?? null) : null;
+}
+
+function createTimestampLabelState(
+  fileId: string,
+  lines: TimestampLabelLines,
+) {
+  const state: TimestampLabelState = {
+    id: `timestamp-label-${++timestampLabelStateSequence}`,
+    lines: [...lines],
+    linkedPhotoIds: new Set([fileId]),
+  };
+  timestampLabelStates.set(state.id, state);
+  timestampLabelIdByPhotoId.set(fileId, state.id);
+  return state;
+}
+
+function unlinkPhotoFromTimestampLabel(fileId: string) {
+  const labelId = timestampLabelIdByPhotoId.get(fileId);
+  if (!labelId) {
+    return;
+  }
+
+  timestampLabelIdByPhotoId.delete(fileId);
+  const state = timestampLabelStates.get(labelId);
+  if (!state) {
+    return;
+  }
+
+  state.linkedPhotoIds.delete(fileId);
+  if (!state.linkedPhotoIds.size) {
+    timestampLabelStates.delete(labelId);
+  }
+}
+
+function updateTimestampLabelFormFromState(
+  file: LoadedFile,
+  state: TimestampLabelState,
+) {
+  if (!file.elements) {
+    return;
+  }
+
+  file.elements.timestampEnabledInput.checked = true;
+  file.elements.timestampAddressInputs.forEach((input, index) => {
+    input.value = state.lines[index];
+    input.disabled = false;
+  });
+  file.elements.timestampCopyButton.disabled = !timestampLabelHasContent(
+    state.lines,
+  );
+  schedulePreviewRefresh(file);
+}
+
+function deleteTimestampLabelState(state: TimestampLabelState) {
+  for (const fileId of state.linkedPhotoIds) {
+    timestampLabelIdByPhotoId.delete(fileId);
+  }
+  timestampLabelStates.delete(state.id);
+}
+
+function reconcileTimestampLabelForm(file: LoadedFile) {
+  if (!file.elements || !isTimestampOverlayEnabled(file)) {
+    return;
+  }
+
+  const lines = getTimestampLabelLines(file);
+  const state = getTimestampLabelStateForPhoto(file.id);
+
+  if (!timestampLabelHasContent(lines)) {
+    if (state) {
+      state.lines = [...lines];
+      for (const linkedFileId of state.linkedPhotoIds) {
+        const linkedFile = loadedFiles.find(
+          (candidate) => candidate.id === linkedFileId,
+        );
+        if (linkedFile && linkedFile !== file) {
+          updateTimestampLabelFormFromState(linkedFile, state);
+        }
+      }
+      deleteTimestampLabelState(state);
+    }
+    refreshTimestampLabelApplyButtons();
+    return;
+  }
+
+  const activeState = state ?? createTimestampLabelState(file.id, lines);
+  activeState.lines = [...lines];
+  for (const linkedFileId of activeState.linkedPhotoIds) {
+    const linkedFile = loadedFiles.find(
+      (candidate) => candidate.id === linkedFileId,
+    );
+    if (linkedFile && linkedFile !== file) {
+      updateTimestampLabelFormFromState(linkedFile, activeState);
+    }
+  }
+  refreshTimestampLabelApplyButtons();
+}
+
+function refreshTimestampLabelApplyButtons() {
+  const state =
+    timestampLabelStates.size === 1
+      ? (timestampLabelStates.values().next().value ?? null)
+      : null;
+
+  loadedFiles.forEach((file) => {
+    const button = file.elements?.applyTimestampLabelButton;
+    if (!button) {
+      return;
+    }
+
+    button.hidden = !state || timestampLabelIdByPhotoId.has(file.id);
+  });
+}
+
+function linkPhotoToTimestampLabel(
+  state: TimestampLabelState,
+  destination: LoadedFile,
+) {
+  if (!destination.elements) {
+    return;
+  }
+
+  unlinkPhotoFromTimestampLabel(destination.id);
+  state.linkedPhotoIds.add(destination.id);
+  timestampLabelIdByPhotoId.set(destination.id, state.id);
+  updateTimestampLabelFormFromState(destination, state);
+  refreshTimestampLabelApplyButtons();
+}
+
+type ImageRenderOptions = {
+  width?: number;
+  height?: number;
+  maxEdge?: number;
+  quality?: number;
+  orientation?: number;
+  overlay?: {
+    date: Date;
+    addressLines: string[];
+  };
+};
+
+const PREVIEW_MAX_EDGE = 1200;
+const THUMBNAIL_MAX_EDGE = 288;
+let imageRenderSequence = 0;
+
+function getTimestampLine(date: Date) {
+  const dateStr = date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const timeStr = date.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  return `${dateStr} at ${timeStr}`;
+}
+
+async function renderJpegFallback(source: Blob, options: ImageRenderOptions) {
+  const sourceBuffer = await source.arrayBuffer();
+  const orientation = options.orientation ?? 1;
+  const encodedDimensions = parseJpegDimensions(sourceBuffer);
+  const displayDimensions = encodedDimensions
+    ? getDisplayDimensions(encodedDimensions, orientation)
+    : null;
+  let width = options.width ?? displayDimensions?.width;
+  let height = options.height ?? displayDimensions?.height;
+
+  if (
+    width &&
+    height &&
+    options.maxEdge &&
+    Math.max(width, height) > options.maxEdge
+  ) {
+    const scale = options.maxEdge / Math.max(width, height);
+    width = Math.max(1, Math.round(width * scale));
+    height = Math.max(1, Math.round(height * scale));
+  }
+
+  if (!width || !height) {
+    return source;
+  }
+
+  let image: CanvasImageSource;
+  let orientationToApply = orientation;
+  if ("createImageBitmap" in window) {
+    image = await window.createImageBitmap(source, {
+      imageOrientation: "none",
+      resizeWidth: orientationSwapsDimensions(orientation) ? height : width,
+      resizeHeight: orientationSwapsDimensions(orientation) ? width : height,
+      resizeQuality: "high",
+    });
+  } else {
+    const url = URL.createObjectURL(source);
+    try {
+      const fallbackImage = new Image();
+      fallbackImage.decoding = "async";
+      fallbackImage.src = url;
+      await fallbackImage.decode();
+      image = fallbackImage;
+      orientationToApply = 1;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas rendering is unavailable");
+  }
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  drawOrientedCanvasImage(
+    context,
+    image,
+    width,
+    height,
+    orientationToApply,
+  );
+
+  if (options.overlay) {
+    drawTimestampOverlay(
+      context,
+      width,
+      height,
+      options.overlay.date,
+      options.overlay.addressLines,
+    );
+  }
+  if ("close" in image && typeof image.close === "function") {
+    image.close();
+  }
+  return canvasToJpegBlob(canvas, options.quality ?? 0.92);
+}
+
+function drawOrientedCanvasImage(
+  context: CanvasRenderingContext2D,
+  image: CanvasImageSource,
+  width: number,
+  height: number,
+  orientation: number,
+) {
+  context.save();
+  switch (orientation) {
+    case 2:
+      context.transform(-1, 0, 0, 1, width, 0);
+      break;
+    case 3:
+      context.transform(-1, 0, 0, -1, width, height);
+      break;
+    case 4:
+      context.transform(1, 0, 0, -1, 0, height);
+      break;
+    case 5:
+      context.transform(0, 1, 1, 0, 0, 0);
+      break;
+    case 6:
+      context.transform(0, 1, -1, 0, width, 0);
+      break;
+    case 7:
+      context.transform(0, -1, -1, 0, width, height);
+      break;
+    case 8:
+      context.transform(0, -1, 1, 0, 0, height);
+      break;
+  }
+  context.drawImage(
+    image,
+    0,
+    0,
+    orientationSwapsDimensions(orientation) ? height : width,
+    orientationSwapsDimensions(orientation) ? width : height,
+  );
+  context.restore();
+}
+
+function drawTimestampOverlay(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  date: Date,
+  addressLines: string[],
+) {
+  const lines = [
+    getTimestampLine(date),
+    ...addressLines.filter(Boolean).slice(0, 4),
+  ];
+  const shortEdge = Math.min(width, height);
+  const fontSize = shortEdge * 0.0562;
+  const lineHeight = shortEdge * 0.0618;
+  const marginX = shortEdge * 0.0565;
+  const marginBottom = shortEdge * 0.0565;
+  const shadowOffset = Math.max(1, shortEdge * 0.0007);
+  context.font = `${fontSize}px -apple-system, BlinkMacSystemFont, "SF Pro", Roboto, Arial, sans-serif`;
+  context.fillStyle = "#fff";
+  context.textAlign = "left";
+  context.textBaseline = "bottom";
+  context.shadowColor = "#000";
+  context.shadowOffsetX = shadowOffset;
+  context.shadowOffsetY = shadowOffset;
+  context.shadowBlur = Math.max(1, shadowOffset * 0.5);
+
+  let currentY = height - marginBottom;
+  for (let index = lines.length - 1; index >= 0; index--) {
+    context.fillText(lines[index], marginX, currentY);
+    currentY -= lineHeight;
+  }
+}
+
+async function renderJpegInWorker(
+  source: Blob,
+  options: ImageRenderOptions,
+  previewFile?: LoadedFile,
+) {
+  if (typeof Worker === "undefined") {
+    return renderJpegFallback(source, options);
+  }
+
+  if (previewFile?.previewJob) {
+    previewFile.previewJob.worker.terminate();
+    previewFile.previewJob.reject(
+      new DOMException("Superseded preview render", "AbortError"),
+    );
+    previewFile.previewJob = undefined;
+  }
+
+  let worker: Worker;
+  try {
+    worker = new ImageWorker();
+  } catch {
+    return renderJpegFallback(source, options);
+  }
+
+  const id = ++imageRenderSequence;
+  try {
+    return await new Promise<Blob>((resolve, reject) => {
+      if (previewFile) {
+        previewFile.previewJob = { worker, reject };
+      }
+
+      worker.addEventListener("message", (event: MessageEvent) => {
+        if (event.data?.id !== id) {
+          return;
+        }
+        if (event.data.error) {
+          reject(new Error(event.data.error));
+          return;
+        }
+        resolve(event.data.blob as Blob);
+      });
+      worker.addEventListener("error", (event) => {
+        reject(new Error(event.message || "Image worker failed"));
+      });
+      worker.postMessage({
+        id,
+        source,
+        width: options.width,
+        height: options.height,
+        maxEdge: options.maxEdge,
+        quality: options.quality ?? 0.92,
+        orientation: options.orientation ?? 1,
+        overlay: options.overlay
+          ? {
+              timestampLine: getTimestampLine(options.overlay.date),
+              addressLines: options.overlay.addressLines.filter(Boolean),
+            }
+          : undefined,
+      });
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw error;
+    }
+    return renderJpegFallback(source, options);
+  } finally {
+    worker.terminate();
+    if (previewFile?.previewJob?.worker === worker) {
+      previewFile.previewJob = undefined;
+    }
+  }
+}
+
 function canvasToJpegBlob(canvas: HTMLCanvasElement, quality = 0.92) {
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
@@ -1043,210 +1558,6 @@ function canvasToJpegBlob(canvas: HTMLCanvasElement, quality = 0.92) {
       "image/jpeg",
       quality,
     );
-  });
-}
-
-async function decodeImageBitmap(blob: Blob) {
-  if ("createImageBitmap" in window) {
-    return window.createImageBitmap(blob);
-  }
-
-  const url = URL.createObjectURL(blob);
-  try {
-    const image = new Image();
-    image.decoding = "async";
-    image.src = url;
-    await image.decode();
-    return image;
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
-async function resizeJpegBuffer(
-  arrayBuffer: ArrayBuffer,
-  dimensions: ImageDimensions,
-) {
-  const sourceBlob = new Blob([arrayBuffer], { type: "image/jpeg" });
-  const image = await decodeImageBitmap(sourceBlob);
-  const canvas = document.createElement("canvas");
-  canvas.width = dimensions.width;
-  canvas.height = dimensions.height;
-
-  const context = canvas.getContext("2d");
-  if (!context) {
-    throw new Error("Canvas rendering is unavailable");
-  }
-
-  context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = "high";
-
-  let source: CanvasImageSource = image;
-  let sourceWidth = image.width;
-  let sourceHeight = image.height;
-
-  while (
-    sourceWidth > dimensions.width * 2 ||
-    sourceHeight > dimensions.height * 2
-  ) {
-    const intermediateCanvas = document.createElement("canvas");
-    intermediateCanvas.width = Math.max(
-      dimensions.width,
-      Math.round(sourceWidth / 2),
-    );
-    intermediateCanvas.height = Math.max(
-      dimensions.height,
-      Math.round(sourceHeight / 2),
-    );
-
-    const intermediateContext = intermediateCanvas.getContext("2d");
-    if (!intermediateContext) {
-      throw new Error("Canvas rendering is unavailable");
-    }
-
-    intermediateContext.imageSmoothingEnabled = true;
-    intermediateContext.imageSmoothingQuality = "high";
-    intermediateContext.drawImage(
-      source,
-      0,
-      0,
-      intermediateCanvas.width,
-      intermediateCanvas.height,
-    );
-
-    source = intermediateCanvas;
-    sourceWidth = intermediateCanvas.width;
-    sourceHeight = intermediateCanvas.height;
-  }
-
-  context.drawImage(source, 0, 0, dimensions.width, dimensions.height);
-
-  if ("close" in image && typeof image.close === "function") {
-    image.close();
-  }
-
-  const resizedBlob = await canvasToJpegBlob(canvas);
-  return resizedBlob.arrayBuffer();
-}
-
-async function addTimestampOverlay(
-  imageBuffer: ArrayBuffer | Uint8Array,
-  dateObj: Date,
-  addressLines: string[],
-) {
-  return new Promise<ArrayBuffer>((resolve, reject) => {
-    const blob = new Blob([new Uint8Array(imageBuffer)], {
-      type: "image/jpeg",
-    });
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
-
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-
-      const canvas = document.createElement("canvas");
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        reject(new Error("Canvas rendering is unavailable"));
-        return;
-      }
-
-      ctx.drawImage(img, 0, 0);
-
-      const dateStr = dateObj.toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      });
-      const timeStr = dateObj.toLocaleTimeString("en-US", {
-        hour: "numeric",
-        minute: "2-digit",
-        second: "2-digit",
-      });
-      const timestampLine = `${dateStr} at ${timeStr}`;
-      const validAddressLines = addressLines.filter(
-        (line) => line && line.trim() !== "",
-      );
-      const linesToDraw = [timestampLine, ...validAddressLines.slice(0, 4)];
-
-      // 1. Find the shortest edge to ensure uniformity across Portrait/Landscape/Square
-      const shortEdge = Math.min(canvas.width, canvas.height);
-
-      // 2. Calculate dimensions using exact percentages from the original reference
-      const fontSize = shortEdge * 0.0562; // ~5.62% of image scale
-      const lineHeight = shortEdge * 0.0618; // ~6.18% spacing between lines
-      const marginX = shortEdge * 0.0565; // ~5.65% left padding
-      const marginBottom = shortEdge * 0.0565; // ~5.65% bottom padding
-
-      // Scale the shadow proportionally (min 1px so it doesn't disappear on tiny images)
-      const shadowOffset = Math.max(1, shortEdge * 0.0007);
-
-      // 3. Configure Font and Text properties
-      // Use exactly the calculated font size
-      ctx.font = `${fontSize}px "-apple-system", "BlinkMacSystemFont", "SF Pro", "San Francisco", "Roboto", "Arial", sans-serif`;
-      ctx.fillStyle = "#FFFFFF";
-      ctx.textAlign = "left";
-      ctx.textBaseline = "bottom"; // Anchors to the bottom of the text
-
-      // 4. Apply the Drop Shadow
-      ctx.shadowColor = "rgba(0, 0, 0, 1)";
-      ctx.shadowOffsetX = shadowOffset;
-      ctx.shadowOffsetY = shadowOffset;
-      ctx.shadowBlur = Math.max(1, shadowOffset * 0.5); // Very slight blur to soften the sub-pixels
-
-      // 5. Draw the text lines from bottom to top
-      let currentY = canvas.height - marginBottom;
-
-      for (let i = linesToDraw.length - 1; i >= 0; i--) {
-        ctx.fillText(linesToDraw[i], marginX, currentY);
-        currentY -= lineHeight;
-      }
-
-      // const referenceWidth = 3024;
-      // const scale = canvas.width / referenceWidth;
-
-      // const fontSize = Math.max(1, Math.round(175 * scale));
-      // const lineHeight = Math.max(1, Math.round(188 * scale));
-      // const marginX = Math.max(1, Math.round(170 * scale));
-      // const marginBottom = Math.max(1, Math.round(170 * scale));
-
-      // ctx.font = `${fontSize}px "-apple-system", "BlinkMacSystemFont", "SF Pro", "San Francisco", "Roboto", "Arial", sans-serif`;
-      // ctx.fillStyle = "#FFFFFF";
-      // ctx.textAlign = "left";
-      // ctx.textBaseline = "bottom";
-      // ctx.shadowColor = "rgba(0, 0, 0, 1)";
-      // ctx.shadowOffsetX = 2 * scale;
-      // ctx.shadowOffsetY = 2 * scale;
-      // ctx.shadowBlur = 1 * scale;
-
-      // let currentY = canvas.height - marginBottom;
-      // for (let i = linesToDraw.length - 1; i >= 0; i--) {
-      //   ctx.fillText(linesToDraw[i], marginX, currentY);
-      //   currentY -= lineHeight;
-      // }
-
-      canvas.toBlob(
-        (outBlob) => {
-          if (!outBlob) {
-            reject(new Error("Canvas to Blob conversion failed"));
-            return;
-          }
-
-          outBlob.arrayBuffer().then(resolve).catch(reject);
-        },
-        "image/jpeg",
-        0.95,
-      );
-    };
-
-    img.onerror = (err) => {
-      URL.revokeObjectURL(url);
-      reject(new Error("Failed to load image from buffer: " + err));
-    };
-
-    img.src = url;
   });
 }
 
@@ -1289,154 +1600,176 @@ function parseJpegDimensions(arrayBuffer: ArrayBuffer): ImageDimensions | null {
   return null;
 }
 
-function updateExifPixelDimensions(
-  arrayBuffer: ArrayBuffer,
+export function normalizeRenderedExifSegment(
+  segment: Uint8Array,
   dimensions: ImageDimensions,
 ) {
-  const view = new DataView(arrayBuffer);
-  if (view.byteLength < 4 || view.getUint16(0, false) !== TAGS.JPEG_START) {
-    return;
+  if (
+    segment.length < 18 ||
+    ((segment[0] << 8) | segment[1]) !== TAGS.APP1_MARKER
+  ) {
+    return segment;
   }
 
-  let offset = 2;
-  let tiffStartOffset = -1;
-  while (offset + 4 <= view.byteLength) {
-    const marker = view.getUint16(offset, false);
-    offset += 2;
-
-    if (marker === TAGS.START_OF_SCAN || marker === TAGS.END_OF_IMAGE) {
-      break;
-    }
-
-    if ((marker & TAGS.VALID_MARKER_PREFIX) !== TAGS.VALID_MARKER_PREFIX) {
-      break;
-    }
-
-    const segmentLength = view.getUint16(offset, false);
-    if (marker === TAGS.APP1_MARKER) {
-      const potential = offset + 2;
-      if (
-        potential + 6 <= view.byteLength &&
-        view.getUint32(potential, false) === TAGS.EXIF_HEADER &&
-        view.getUint16(potential + 4, false) === 0
-      ) {
-        tiffStartOffset = potential + 6;
-        break;
-      }
-    }
-
-    offset += segmentLength;
+  const updated = segment.slice();
+  const view = new DataView(updated.buffer);
+  const exifPayloadOffset = 4;
+  if (
+    view.getUint32(exifPayloadOffset, false) !== TAGS.EXIF_HEADER ||
+    view.getUint16(exifPayloadOffset + 4, false) !== 0
+  ) {
+    return segment;
   }
 
-  if (tiffStartOffset === -1 || tiffStartOffset + 8 > view.byteLength) {
-    return;
-  }
-
+  const tiffStartOffset = exifPayloadOffset + 6;
   const byteOrder = view.getUint16(tiffStartOffset, false);
   const littleEndian = byteOrder === TAGS.LITTLE_ENDIAN;
-  if (!littleEndian && byteOrder !== TAGS.BIG_ENDIAN) {
-    return;
-  }
-
-  if (view.getUint16(tiffStartOffset + 2, littleEndian) !== 42) {
-    return;
+  if (
+    (!littleEndian && byteOrder !== TAGS.BIG_ENDIAN) ||
+    view.getUint16(tiffStartOffset + 2, littleEndian) !== 42
+  ) {
+    return segment;
   }
 
   const firstIFDOffset =
     tiffStartOffset + view.getUint32(tiffStartOffset + 4, littleEndian);
 
-  function getLinkedIFDOffset(ifdOffset: number, pointerTag: number) {
-    if (ifdOffset + 2 > view.byteLength) {
+  function findEntry(ifdOffset: number, tag: number) {
+    if (ifdOffset < tiffStartOffset || ifdOffset + 2 > view.byteLength) {
       return null;
     }
-
     const count = view.getUint16(ifdOffset, littleEndian);
-    let entryOffset = ifdOffset + 2;
     for (let index = 0; index < count; index++) {
+      const entryOffset = ifdOffset + 2 + index * 12;
       if (entryOffset + 12 > view.byteLength) {
         return null;
       }
-
-      if (view.getUint16(entryOffset, littleEndian) === pointerTag) {
-        return tiffStartOffset + view.getUint32(entryOffset + 8, littleEndian);
+      if (view.getUint16(entryOffset, littleEndian) === tag) {
+        return entryOffset;
       }
-
-      entryOffset += 12;
     }
-
     return null;
   }
 
-  function updateDimensionTag(ifdOffset: number, tag: number, value: number) {
-    if (ifdOffset + 2 > view.byteLength) {
+  function updateUnsignedTag(ifdOffset: number, tag: number, value: number) {
+    const entryOffset = findEntry(ifdOffset, tag);
+    if (entryOffset === null) {
       return;
     }
-
-    const count = view.getUint16(ifdOffset, littleEndian);
-    let entryOffset = ifdOffset + 2;
-    for (let index = 0; index < count; index++) {
-      if (entryOffset + 12 > view.byteLength) {
-        return;
-      }
-
-      if (view.getUint16(entryOffset, littleEndian) === tag) {
-        const type = view.getUint16(entryOffset + 2, littleEndian);
-        const componentCount = view.getUint32(entryOffset + 4, littleEndian);
-        if (componentCount !== 1) {
-          return;
-        }
-
-        if (type === 3 && value <= 65535) {
-          view.setUint16(entryOffset + 8, value, littleEndian);
-        } else if (type === 4) {
-          view.setUint32(entryOffset + 8, value, littleEndian);
-        }
-        return;
-      }
-
-      entryOffset += 12;
+    const type = view.getUint16(entryOffset + 2, littleEndian);
+    const count = view.getUint32(entryOffset + 4, littleEndian);
+    if (count !== 1) {
+      return;
+    }
+    if (type === 3 && value <= 0xffff) {
+      view.setUint16(entryOffset + 8, value, littleEndian);
+    } else if (type === 4) {
+      view.setUint32(entryOffset + 8, value, littleEndian);
     }
   }
 
-  const exifIFDOffset = getLinkedIFDOffset(firstIFDOffset, TAGS.ExifIFDPointer);
-  if (!exifIFDOffset) {
-    return;
+  updateUnsignedTag(firstIFDOffset, TAGS.Orientation, 1);
+
+  const exifPointerEntry = findEntry(firstIFDOffset, TAGS.ExifIFDPointer);
+  if (exifPointerEntry !== null) {
+    const exifIFDOffset =
+      tiffStartOffset + view.getUint32(exifPointerEntry + 8, littleEndian);
+    updateUnsignedTag(
+      exifIFDOffset,
+      TAGS.ExifImageWidth,
+      dimensions.width,
+    );
+    updateUnsignedTag(
+      exifIFDOffset,
+      TAGS.ExifImageHeight,
+      dimensions.height,
+    );
   }
 
-  updateDimensionTag(exifIFDOffset, TAGS.ExifImageWidth, dimensions.width);
-  updateDimensionTag(exifIFDOffset, TAGS.ExifImageHeight, dimensions.height);
+  return updated;
 }
+
+function createJpegRenderSource(
+  arrayBuffer: ArrayBuffer,
+  structure: JpegStructure,
+) {
+  const encodedDimensions = parseJpegDimensions(arrayBuffer);
+  if (!encodedDimensions) {
+    return new Blob([arrayBuffer], { type: "image/jpeg" });
+  }
+
+  const bytes = new Uint8Array(arrayBuffer);
+  const parts: BlobPart[] = [];
+  let cursor = 0;
+  let replacedExif = false;
+  for (const range of structure.metadataRanges) {
+    const segment = bytes.subarray(range.start, range.end);
+    const normalized = normalizeRenderedExifSegment(
+      segment,
+      encodedDimensions,
+    );
+    if (normalized === segment) {
+      continue;
+    }
+    parts.push(bytes.subarray(cursor, range.start), normalized);
+    cursor = range.end;
+    replacedExif = true;
+  }
+  if (!replacedExif) {
+    return new Blob([arrayBuffer], { type: "image/jpeg" });
+  }
+  parts.push(bytes.subarray(cursor));
+  return new Blob(parts, { type: "image/jpeg" });
+}
+
+function getFileRenderSource(file: LoadedFile) {
+  if (!file.jpegStructure) {
+    file.jpegStructure = scanJpegStructure(file.workingBuffer);
+  }
+  return createJpegRenderSource(file.workingBuffer, file.jpegStructure);
+}
+
 
 async function getEditedBlob(file: LoadedFile) {
   applyFormToWorkingBuffer(file);
   const requestedDimensions = getRequestedDimensions(file);
-  updateExifPixelDimensions(file.workingBuffer, requestedDimensions);
-
-  const metadataSourceBuffer = file.xmpRemoved
-    ? stripXmpSegments(file.workingBuffer)
-    : file.workingBuffer;
-  let outputBuffer = metadataSourceBuffer;
-  const metadataSegments = getJpegMetadataSegments(metadataSourceBuffer);
-
-  if (dimensionsChanged(file.dimensions, requestedDimensions)) {
-    const resizedBuffer = await resizeJpegBuffer(
-      metadataSourceBuffer,
-      requestedDimensions,
-    );
-    outputBuffer = insertJpegMetadataSegments(resizedBuffer, metadataSegments);
-  }
-
   const timestampDate = getTimestampDate(file);
-  if (isTimestampOverlayEnabled(file) && timestampDate) {
-    const overlayBuffer = await addTimestampOverlay(
-      outputBuffer,
-      timestampDate,
-      getTimestampAddressLines(file),
-    );
-    outputBuffer = insertJpegMetadataSegments(overlayBuffer, metadataSegments);
+  const hasOverlay = isTimestampOverlayEnabled(file) && !!timestampDate;
+  const hasResize = dimensionsChanged(file.dimensions, requestedDimensions);
+
+  if (!hasOverlay && !hasResize) {
+    return file.xmpRemoved
+      ? createJpegBlobWithoutXmp(
+          file.workingBuffer,
+          file.jpegStructure?.xmpRanges,
+        )
+      : new Blob([file.workingBuffer], { type: "image/jpeg" });
   }
 
-  return new Blob([outputBuffer], { type: "image/jpeg" });
+  const metadataSegments = getFileMetadataSegments(file).map((segment) =>
+    normalizeRenderedExifSegment(segment, requestedDimensions),
+  );
+  const renderedBlob = await renderJpegInWorker(
+    getFileRenderSource(file),
+    {
+      width: requestedDimensions.width,
+      height: requestedDimensions.height,
+      quality: hasOverlay ? 0.95 : 0.92,
+      orientation: file.orientation ?? 1,
+      overlay:
+        hasOverlay && timestampDate
+          ? {
+              date: timestampDate,
+              addressLines: getTimestampAddressLines(file),
+            }
+          : undefined,
+    },
+  );
+  const renderedBuffer = await renderedBlob.arrayBuffer();
+  return new Blob(
+    [insertJpegMetadataSegments(renderedBuffer, metadataSegments)],
+    { type: "image/jpeg" },
+  );
 }
 
 function triggerBlobDownload(blob: Blob, filename: string) {
@@ -1452,6 +1785,10 @@ function triggerBlobDownload(blob: Blob, filename: string) {
 
 function schedulePreviewRefresh(file: LoadedFile) {
   if (!file.elements) {
+    return;
+  }
+
+  if (file.previewStateKey === getPreviewStateKey(file)) {
     return;
   }
 
@@ -1472,9 +1809,32 @@ async function refreshFilePreview(file: LoadedFile) {
 
   const token = (file.previewRenderToken ?? 0) + 1;
   file.previewRenderToken = token;
+  const stateKey = getPreviewStateKey(file);
+  if (file.previewStateKey === stateKey) {
+    return;
+  }
 
   try {
-    const blob = await getEditedBlob(file);
+    const dimensions = getRequestedDimensions(file);
+    const timestampDate = getTimestampDate(file);
+    const blob = await renderJpegInWorker(
+      getFileRenderSource(file),
+      {
+        width: dimensions.width,
+        height: dimensions.height,
+        maxEdge: PREVIEW_MAX_EDGE,
+        quality: 0.86,
+        orientation: file.orientation ?? 1,
+        overlay:
+          isTimestampOverlayEnabled(file) && timestampDate
+            ? {
+                date: timestampDate,
+                addressLines: getTimestampAddressLines(file),
+              }
+            : undefined,
+      },
+      file,
+    );
     if (file.previewRenderToken !== token || !file.elements) {
       return;
     }
@@ -1483,13 +1843,41 @@ async function refreshFilePreview(file: LoadedFile) {
     const previousUrl = file.previewUrl;
     file.previewUrl = nextUrl;
     file.elements.previewImg.src = nextUrl;
+    sizePreviewImage(file.elements.previewImg, dimensions);
+    file.previewStateKey = stateKey;
+    if (file.thumbnailUrl) {
+      URL.revokeObjectURL(file.thumbnailUrl);
+      file.thumbnailUrl = undefined;
+    }
     if (!imageModal.hidden && modalPreview.src === previousUrl) {
       modalPreview.src = nextUrl;
     }
     URL.revokeObjectURL(previousUrl);
   } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return;
+    }
     console.error("Failed to refresh image preview", error);
   }
+}
+
+function getPreviewStateKey(file: LoadedFile) {
+  if (!file.elements) {
+    return "unmounted";
+  }
+  const dimensions = getRequestedDimensions(file);
+  const timestampDate = getTimestampDate(file);
+  return JSON.stringify({
+    width: dimensions.width,
+    height: dimensions.height,
+    timestamp:
+      isTimestampOverlayEnabled(file) && timestampDate
+        ? timestampDate.getTime()
+        : null,
+    addressLines: isTimestampOverlayEnabled(file)
+      ? getTimestampAddressLines(file)
+      : [],
+  });
 }
 
 function getUniqueFilenames(names: string[]) {
@@ -1515,9 +1903,11 @@ function refreshLoadedFileControls() {
       return;
     }
 
-    file.elements.moveUpButton.disabled = index === 0;
-    file.elements.moveDownButton.disabled = index === loadedFiles.length - 1;
+    file.elements.moveUpButton.disabled = pendingImportCount > 0 || index === 0;
+    file.elements.moveDownButton.disabled =
+      pendingImportCount > 0 || index === loadedFiles.length - 1;
   });
+  refreshTimestampLabelApplyButtons();
 }
 
 function isIOSDevice() {
@@ -1557,6 +1947,9 @@ function canShareFiles(file: LoadedFile) {
 }
 
 function moveLoadedFile(fileId: string, direction: -1 | 1) {
+  if (pendingImportCount > 0) {
+    return;
+  }
   const fromIndex = loadedFiles.findIndex((file) => file.id === fileId);
   const toIndex = fromIndex + direction;
 
@@ -1589,6 +1982,10 @@ function getZipTimestampParts(date: Date) {
 
 let crcTable: Uint32Array | null = null;
 
+function yieldToMainThread() {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+}
+
 function getCrcTable() {
   if (crcTable) {
     return crcTable;
@@ -1605,29 +2002,34 @@ function getCrcTable() {
   return crcTable;
 }
 
-function crc32(data: Uint8Array) {
+async function crc32(data: Uint8Array) {
   const table = getCrcTable();
   let crc = 0xffffffff;
 
-  for (const byte of data) {
-    crc = table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  for (let index = 0; index < data.length; index++) {
+    crc = table[(crc ^ data[index]) & 0xff] ^ (crc >>> 8);
+    if (index > 0 && index % (1024 * 1024) === 0) {
+      await yieldToMainThread();
+    }
   }
 
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function createStoredZip(entries: { name: string; data: Uint8Array }[]) {
+export async function createStoredZip(
+  entries: { name: string; data: Uint8Array }[],
+) {
   const encoder = new TextEncoder();
   const now = getZipTimestampParts(new Date());
-  const localParts: Uint8Array[] = [];
+  const localParts: BlobPart[] = [];
   const centralParts: Uint8Array[] = [];
   let offset = 0;
 
-  entries.forEach(({ name, data }) => {
+  for (const { name, data } of entries) {
     const nameBytes = encoder.encode(name);
-    const local = new Uint8Array(30 + nameBytes.length + data.length);
+    const local = new Uint8Array(30 + nameBytes.length);
     const localView = new DataView(local.buffer);
-    const fileCrc = crc32(data);
+    const fileCrc = await crc32(data);
 
     localView.setUint32(0, 0x04034b50, true);
     localView.setUint16(4, 20, true);
@@ -1641,8 +2043,7 @@ function createStoredZip(entries: { name: string; data: Uint8Array }[]) {
     localView.setUint16(26, nameBytes.length, true);
     localView.setUint16(28, 0, true);
     local.set(nameBytes, 30);
-    local.set(data, 30 + nameBytes.length);
-    localParts.push(local);
+    localParts.push(local, data);
 
     const central = new Uint8Array(46 + nameBytes.length);
     const centralView = new DataView(central.buffer);
@@ -1666,8 +2067,8 @@ function createStoredZip(entries: { name: string; data: Uint8Array }[]) {
     central.set(nameBytes, 46);
     centralParts.push(central);
 
-    offset += local.length;
-  });
+    offset += local.length + data.length;
+  }
 
   const centralOffset = offset;
   const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
@@ -1682,7 +2083,7 @@ function createStoredZip(entries: { name: string; data: Uint8Array }[]) {
   // Ensure all parts are of type BlobPart (Uint8Array is allowed)
   return new Blob(
     [
-      ...(localParts as BlobPart[]),
+      ...localParts,
       ...(centralParts as BlobPart[]),
       endRecord as BlobPart,
     ],
@@ -1700,15 +2101,19 @@ async function downloadAllLoadedFiles() {
   const names = getUniqueFilenames(
     loadedFiles.map((file) => getDownloadFilename(file)),
   );
-  const entries = await Promise.all(
-    loadedFiles.map(async (file, index) => {
-      const editedBlob = await getEditedBlob(file);
-      const data = new Uint8Array(await editedBlob.arrayBuffer());
-      return { name: names[index], data };
-    }),
-  );
+  const entries: { name: string; data: Uint8Array }[] = [];
+  for (let index = 0; index < loadedFiles.length; index++) {
+    status.textContent = `Preparing ${index + 1} of ${loadedFiles.length}…`;
+    const editedBlob = await getEditedBlob(loadedFiles[index]);
+    entries.push({
+      name: names[index],
+      data: new Uint8Array(await editedBlob.arrayBuffer()),
+    });
+    await yieldToMainThread();
+  }
 
-  const archive = createStoredZip(entries);
+  status.textContent = "Building ZIP…";
+  const archive = await createStoredZip(entries);
   triggerBlobDownload(archive, "exif-edits.zip");
   status.textContent = `Downloaded ${entries.length} file(s) as ZIP.`;
 }
@@ -1842,62 +2247,152 @@ function parseXmpMetadata(arrayBuffer: ArrayBuffer): XMPMetadata | null {
   return null;
 }
 
+export async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  task: (item: T, index: number) => Promise<void>,
+) {
+  let nextIndex = 0;
+  const runners = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex++;
+        await task(items[index], index);
+      }
+    },
+  );
+  await Promise.all(runners);
+}
+
+function appendPendingFileCard(filename: string) {
+  const placeholder = document.createElement("div");
+  const name = document.createElement("div");
+  const progress = document.createElement("div");
+  placeholder.className = "file-editor import-pending";
+  placeholder.setAttribute("aria-busy", "true");
+  name.className = "import-pending-name";
+  name.textContent = filename;
+  progress.className = "muted";
+  progress.textContent = "Reading photo…";
+  placeholder.append(name, progress);
+  fileListEl.appendChild(placeholder);
+  return placeholder;
+}
+
+function syncLoadedFilesToCardOrder() {
+  const order = new Map(
+    Array.from(fileListEl.querySelectorAll<HTMLElement>("[data-file-id]")).map(
+      (element, index) => [element.dataset.fileId, index],
+    ),
+  );
+  loadedFiles.sort(
+    (a, b) =>
+      (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+      (order.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+  );
+}
+
+async function createThumbnailUrl(
+  source: Blob,
+  dimensions: ImageDimensions,
+  orientation: number,
+) {
+  try {
+    const thumbnail = await renderJpegInWorker(source, {
+      width: dimensions.width,
+      height: dimensions.height,
+      orientation,
+      maxEdge: THUMBNAIL_MAX_EDGE,
+      quality: 0.82,
+    });
+    return URL.createObjectURL(thumbnail);
+  } catch (error) {
+    console.warn("Thumbnail generation failed", error);
+    return undefined;
+  }
+}
+
+async function processImportedFile(file: File): Promise<LoadedFile> {
+  const workingBuffer = await file.arrayBuffer();
+  const encodedDimensions = parseJpegDimensions(workingBuffer) ?? {
+    width: 0,
+    height: 0,
+  };
+  const orientation = parseExifOrientation(workingBuffer);
+  const dimensions = getDisplayDimensions(encodedDimensions, orientation);
+  const jpegStructure = scanJpegStructure(workingBuffer);
+  const thumbnailPromise = createThumbnailUrl(
+    createJpegRenderSource(workingBuffer, jpegStructure),
+    dimensions,
+    orientation,
+  );
+  let fileFields: EXIFField[] = [];
+  const xmpMetadata = parseXmpMetadata(workingBuffer);
+
+  try {
+    fileFields = parseExifDates(workingBuffer);
+  } catch (err) {
+    if (err instanceof Error && err.message === "No EXIF APP1 segment found") {
+      console.info(`${file.name} has no EXIF APP1 segment.`);
+    } else {
+      console.error(err);
+    }
+  }
+
+  return {
+    id: crypto.randomUUID(),
+    filename: file.name,
+    originalFilename: file.name,
+    workingBuffer,
+    dimensions,
+    orientation,
+    parsedFields: fileFields,
+    xmpMetadata,
+    xmpRemoved: false,
+    jpegStructure,
+    previewUrl: URL.createObjectURL(file),
+    thumbnailUrl: await thumbnailPromise,
+  };
+}
+
 async function handleFileList(list: FileList | null) {
   if (!list || list.length === 0) {
     alert("No file selected.");
     return;
   }
 
-  const addedFiles: LoadedFile[] = [];
-
-  for (const file of Array.from(list)) {
-    if (file.type !== "image/jpeg" && !/\.jpe?g$/i.test(file.name)) {
-      continue;
-    }
-
-    const fileReader = new FileReader();
-    const originalBuffer = await fileReader.readAsArrayBuffer(file);
-    const workingBuffer = originalBuffer.slice(0);
-    const dimensions = parseJpegDimensions(originalBuffer);
-    let fileFields: EXIFField[] = [];
-    const xmpMetadata = parseXmpMetadata(originalBuffer);
-
-    try {
-      fileFields = parseExifDates(workingBuffer);
-    } catch (err) {
-      if (
-        err instanceof Error &&
-        err.message === "No EXIF APP1 segment found"
-      ) {
-        console.info(`${file.name} has no EXIF APP1 segment.`);
-      } else {
-        console.error(err);
-      }
-    }
-
-    addedFiles.push({
-      id: crypto.randomUUID(),
-      filename: file.name,
-      originalFilename: file.name,
-      workingBuffer,
-      dimensions: dimensions ?? { width: 0, height: 0 },
-      parsedFields: fileFields,
-      xmpMetadata,
-      xmpRemoved: false,
-      previewUrl: URL.createObjectURL(file),
-    });
-  }
-
-  if (!addedFiles.length) {
+  const files = Array.from(list).filter(
+    (file) => file.type === "image/jpeg" || /\.jpe?g$/i.test(file.name),
+  );
+  if (!files.length) {
     alert("Only JPEG images are supported by this demo.");
     return;
   }
 
-  loadedFiles = [...loadedFiles, ...addedFiles];
-  for (const file of addedFiles) {
-    appendFileEditor(file);
-  }
+  const importEntries = files.map((file) => ({
+    file,
+    placeholder: appendPendingFileCard(file.name),
+  }));
+  pendingImportCount += importEntries.length;
   updateStatus();
+
+  await runWithConcurrency(importEntries, 2, async (entry) => {
+    try {
+      const loadedFile = await processImportedFile(entry.file);
+      loadedFiles.push(loadedFile);
+      appendFileEditor(loadedFile, entry.placeholder);
+      syncLoadedFilesToCardOrder();
+    } catch (error) {
+      console.error("Could not import photo", error);
+      entry.placeholder.setAttribute("aria-busy", "false");
+      entry.placeholder.classList.add("import-failed");
+      entry.placeholder.lastElementChild!.textContent = "Could not read photo.";
+    } finally {
+      pendingImportCount--;
+      updateStatus();
+    }
+  });
 
   if (fileInput) {
     fileInput.value = "";
@@ -1936,10 +2431,13 @@ function finishFilenameEdit(file: LoadedFile) {
 }
 
 function updateStatus() {
-  downloadAllButton.disabled = loadedFiles.length === 0;
-  status.textContent = loadedFiles.length
-    ? `${loadedFiles.length} file(s) loaded`
-    : "No files loaded";
+  downloadAllButton.disabled =
+    loadedFiles.length === 0 || pendingImportCount > 0;
+  status.textContent = pendingImportCount
+    ? `Loading ${pendingImportCount} file(s)… ${loadedFiles.length} ready`
+    : loadedFiles.length
+      ? `${loadedFiles.length} file(s) loaded`
+      : "No files loaded";
   refreshLoadedFileControls();
 }
 
@@ -1950,11 +2448,19 @@ function removeLoadedFile(fileId: string) {
   }
 
   const [removed] = loadedFiles.splice(fileIndex, 1);
+  unlinkPhotoFromTimestampLabel(fileId);
   if (removed.previewRefreshId !== undefined) {
     window.clearTimeout(removed.previewRefreshId);
   }
+  if (removed.previewJob) {
+    removed.previewJob.worker.terminate();
+    removed.previewJob.reject(new DOMException("File removed", "AbortError"));
+    removed.previewJob = undefined;
+  }
   removed.previewRenderToken = (removed.previewRenderToken ?? 0) + 1;
-  URL.revokeObjectURL(removed.previewUrl);
+  new Set([removed.previewUrl, removed.thumbnailUrl].filter(Boolean)).forEach(
+    (url) => URL.revokeObjectURL(url as string),
+  );
   if (removed.elements?.gpsEditor.classList.contains("is-fullscreen")) {
     document.body.classList.remove("map-fullscreen-open");
   }
@@ -2221,6 +2727,9 @@ function getEpochTimestampValue(
 const COPY_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1a3 3 0 0 1 3 3v9h-2V4a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v1H4V4a3 3 0 0 1 3-3h9Zm-11 6h9a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V10a3 3 0 0 1 3-3Zm0 2a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V10a1 1 0 0 0-1-1H5Z"/></svg>';
 
+const PASTE_ICON_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 2a2 2 0 0 1 2 2h1a3 3 0 0 1 3 3v13a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h1a2 2 0 0 1 2-2h6Zm2 4H7v14a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-1ZM9 4v2h6V4H9Zm2 4h2v5.17l1.59-1.58L16 13l-4 4-4-4 1.41-1.41L11 13.17V8Z"/></svg>';
+
 const CHECK_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.55 18.2 4.3 12.95l1.4-1.4 3.85 3.85 8.75-8.75 1.4 1.4-10.15 10.15Z"/></svg>';
 
@@ -2240,6 +2749,43 @@ async function copyTextToClipboard(value: string) {
   input.select();
   document.execCommand("copy");
   document.body.removeChild(input);
+}
+
+async function readTextFromClipboard() {
+  if (!navigator.clipboard?.readText) {
+    throw new Error("Clipboard reading is not available in this browser.");
+  }
+
+  return navigator.clipboard.readText();
+}
+
+type GpsCoordinates = { latitude: number; longitude: number };
+
+/** Accept decimal-degree coordinates only, for example `34.0522,-118.2437`. */
+function parseDecimalDegreeCoordinates(value: string): GpsCoordinates | null {
+  const match = value
+    .trim()
+    .match(
+      /^([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*,\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))$/,
+    );
+  if (!match) {
+    return null;
+  }
+
+  const latitude = Number(match[1]);
+  const longitude = Number(match[2]);
+  if (
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    return null;
+  }
+
+  return { latitude, longitude };
 }
 
 function clampNumber(value: number, min: number, max: number) {
@@ -3239,7 +3785,7 @@ function setupGpsEditor(file: LoadedFile) {
   elements.gpsEditor.style.display = "flex";
   elements.gpsHint.textContent = internetReachable
     ? altitudeInput !== null
-      ? "Search for an address, drag the marker, or edit the GPS fields directly. Altitude stays editable below."
+      ? "Search for an address, drag the marker, or edit the GPS fields directly. Altitude remains editable in the GPS coordinates group."
       : "Search for an address, drag the marker, or edit the GPS fields directly."
     : "Reconnect to load the map. You can still edit the GPS fields directly.";
 
@@ -3292,6 +3838,8 @@ export function renderFields(file: LoadedFile, form: HTMLFormElement) {
       return a.idx - b.idx;
     });
   const photoTimezoneOffset = getPreferredPhotoOffset(file.parsedFields);
+  let gpsCoordinateGroup: HTMLDivElement | null = null;
+  let gpsCoordinateFields: HTMLDivElement | null = null;
 
   // Helper function to find corresponding date for a time field
   function findCorrespondingDate(timeField: EXIFField): string | null {
@@ -3528,7 +4076,121 @@ export function renderFields(file: LoadedFile, form: HTMLFormElement) {
             ? f.value.toFixed(6)
             : f.value.toFixed(1)
           : "";
-      control = input;
+
+      if (f.name === "GPSLatitude") {
+        const longitudeIndex = file.parsedFields.findIndex(
+          (field) => field.name === "GPSLongitude" && field.type === "coordinate",
+        );
+        if (longitudeIndex !== -1) {
+          const group = document.createElement("div");
+          const groupLabel = document.createElement("div");
+          const fields = document.createElement("div");
+          const toolbar = document.createElement("div");
+          const actions = document.createElement("div");
+          const copyButton = document.createElement("button");
+          const pasteButton = document.createElement("button");
+          const error = document.createElement("div");
+          let errorTimeout: number | undefined;
+
+          const groupLabelId = `${labelId}-gps-coordinate-group`;
+          group.className = "gps-coordinate-group";
+          group.setAttribute("role", "group");
+          group.setAttribute("aria-labelledby", groupLabelId);
+          groupLabel.id = groupLabelId;
+          groupLabel.className = "gps-coordinate-group-label";
+          groupLabel.textContent = "GPS coordinates";
+          fields.className = "gps-coordinate-fields";
+          toolbar.className = "gps-coordinate-toolbar";
+          actions.className = "gps-coordinate-actions";
+          copyButton.type = "button";
+          copyButton.className =
+            "datetime-picker-copy datetime-picker-action clipboard-icon-button";
+          copyButton.innerHTML = COPY_ICON_SVG;
+          copyButton.setAttribute("aria-label", "Copy GPS coordinates");
+          copyButton.title = "Copy GPS coordinates";
+          pasteButton.type = "button";
+          pasteButton.className =
+            "datetime-picker-copy datetime-picker-action clipboard-icon-button";
+          pasteButton.innerHTML = PASTE_ICON_SVG;
+          pasteButton.setAttribute("aria-label", "Paste GPS coordinates");
+          pasteButton.title = "Paste GPS coordinates";
+          error.className = "clipboard-validation-error";
+          error.setAttribute("role", "alert");
+          error.hidden = true;
+
+          const showError = (message: string) => {
+            if (errorTimeout !== undefined) {
+              window.clearTimeout(errorTimeout);
+            }
+            input.setCustomValidity(message);
+            error.textContent = message;
+            error.hidden = false;
+            errorTimeout = window.setTimeout(() => {
+              input.setCustomValidity("");
+              error.hidden = true;
+              error.textContent = "";
+            }, 3000);
+          };
+
+          copyButton.addEventListener("click", () => {
+            const longitudeInput = form.querySelector(
+              `[data-idx="${longitudeIndex}"]`,
+            ) as HTMLInputElement | null;
+            const coordinates = longitudeInput
+              ? parseDecimalDegreeCoordinates(`${input.value},${longitudeInput.value}`)
+              : null;
+            if (!coordinates) {
+              showError("Enter valid GPS coordinates first.");
+              return;
+            }
+            void copyTextToClipboard(`${input.value},${longitudeInput!.value}`).catch(
+              () => showError("Could not copy GPS coordinates."),
+            );
+          });
+
+          pasteButton.addEventListener("click", () => {
+            void readTextFromClipboard()
+              .then((clipboardText) => {
+                const coordinates = parseDecimalDegreeCoordinates(clipboardText);
+                const longitudeInput = form.querySelector(
+                  `[data-idx="${longitudeIndex}"]`,
+                ) as HTMLInputElement | null;
+                if (!coordinates || !longitudeInput) {
+                  showError("Paste latitude,longitude in decimal degrees.");
+                  return;
+                }
+
+                if (errorTimeout !== undefined) {
+                  window.clearTimeout(errorTimeout);
+                }
+                input.setCustomValidity("");
+                error.hidden = true;
+                error.textContent = "";
+                input.value = coordinates.latitude.toString();
+                longitudeInput.value = coordinates.longitude.toString();
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+                longitudeInput.dispatchEvent(new Event("input", { bubbles: true }));
+              })
+              .catch(() => showError("Could not read GPS coordinates."));
+          });
+
+          actions.appendChild(copyButton);
+          actions.appendChild(pasteButton);
+          toolbar.appendChild(actions);
+          toolbar.appendChild(error);
+          group.appendChild(groupLabel);
+          group.appendChild(fields);
+          group.appendChild(toolbar);
+          form.appendChild(group);
+          gpsCoordinateGroup = group;
+          gpsCoordinateFields = fields;
+          control = input;
+        } else {
+          control = input;
+        }
+      } else {
+        control = input;
+      }
     } else {
       label.htmlFor = `field-${idx}`;
       control = createDateTimePicker(idx, labelId, f);
@@ -3536,7 +4198,18 @@ export function renderFields(file: LoadedFile, form: HTMLFormElement) {
 
     row.appendChild(label);
     row.appendChild(control);
-    form.appendChild(row);
+    if (
+      gpsCoordinateGroup &&
+      gpsCoordinateFields &&
+      (f.name === "GPSLatitude" ||
+        f.name === "GPSLongitude" ||
+        f.name === "GPSAltitude")
+    ) {
+      row.classList.add("gps-coordinate-row");
+      gpsCoordinateFields.appendChild(row);
+    } else {
+      form.appendChild(row);
+    }
   });
 
   setupGpsEditor(file);
@@ -3798,7 +4471,7 @@ function updateDevicePanel(file: LoadedFile) {
   }
 }
 
-function appendFileEditor(file: LoadedFile) {
+function appendFileEditor(file: LoadedFile, placeholder?: HTMLElement) {
   const container = document.createElement("div");
   const meta = document.createElement("div");
   const previewColumn = document.createElement("div");
@@ -3818,9 +4491,15 @@ function appendFileEditor(file: LoadedFile) {
   const editorPanel = document.createElement("div");
   const timestampPanel = document.createElement("details");
   const timestampSummary = document.createElement("summary");
+  const timestampSummaryLabel = document.createElement("span");
+  const timestampClipboardActions = document.createElement("span");
+  const timestampCopyButton = document.createElement("button");
+  const timestampPasteButton = document.createElement("button");
   const timestampGrid = document.createElement("div");
+  const timestampPasteError = document.createElement("div");
   const timestampToggleRow = document.createElement("label");
   const timestampEnabledInput = document.createElement("input");
+  const applyTimestampLabelButton = document.createElement("button");
   const timestampAddressInputs = Array.from({ length: 4 }, () =>
     document.createElement("input"),
   );
@@ -3863,6 +4542,7 @@ function appendFileEditor(file: LoadedFile) {
   const clearButton = document.createElement("button");
 
   container.className = "file-editor";
+  container.dataset.fileId = file.id;
   meta.className = "meta";
   previewColumn.className = "preview-column";
   previewFrame.className = "preview-frame";
@@ -3876,7 +4556,10 @@ function appendFileEditor(file: LoadedFile) {
   );
   previewImg.className = "preview";
   previewImg.alt = file.filename;
-  previewImg.src = file.previewUrl;
+  previewImg.src = file.thumbnailUrl ?? file.previewUrl;
+  previewImg.decoding = "async";
+  previewImg.loading = "lazy";
+  sizePreviewImage(previewImg, file.dimensions);
   previewInfo.id = "";
   previewInfo.className = "muted";
   previewNameRow.className = "preview-name-row";
@@ -3907,11 +4590,35 @@ function appendFileEditor(file: LoadedFile) {
   editorPanel.className = "editor-panel";
   timestampPanel.className = "timestamp-panel";
   timestampSummary.className = "timestamp-summary";
-  timestampSummary.textContent = "Photo timestamp label";
+  timestampSummaryLabel.textContent = "Photo timestamp label";
+  timestampClipboardActions.className = "timestamp-clipboard-actions";
+  timestampCopyButton.type = "button";
+  timestampCopyButton.className =
+    "datetime-picker-copy datetime-picker-action clipboard-icon-button";
+  timestampCopyButton.innerHTML = COPY_ICON_SVG;
+  timestampCopyButton.setAttribute("aria-label", "Copy timestamp label address lines");
+  timestampCopyButton.title = "Copy timestamp label address lines";
+  timestampPasteButton.type = "button";
+  timestampPasteButton.className =
+    "datetime-picker-copy datetime-picker-action clipboard-icon-button";
+  timestampPasteButton.innerHTML = PASTE_ICON_SVG;
+  timestampPasteButton.setAttribute("aria-label", "Paste timestamp label address lines");
+  timestampPasteButton.title = "Paste timestamp label address lines";
   timestampGrid.className = "timestamp-grid";
+  timestampPasteError.className = "timestamp-paste-error";
+  timestampPasteError.setAttribute("role", "alert");
+  timestampPasteError.hidden = true;
   timestampToggleRow.className = "timestamp-toggle";
   timestampEnabledInput.type = "checkbox";
   timestampEnabledInput.setAttribute("aria-label", "Add timestamp to photo");
+  applyTimestampLabelButton.type = "button";
+  applyTimestampLabelButton.className = "ghost timestamp-apply-button";
+  applyTimestampLabelButton.textContent = "Copy timestamp label";
+  applyTimestampLabelButton.setAttribute(
+    "aria-label",
+    "Copy timestamp label from matching photo",
+  );
+  applyTimestampLabelButton.hidden = true;
   timestampAddressInputs.forEach((input, index) => {
     input.type = "text";
     input.className = "timestamp-address-input";
@@ -4043,6 +4750,66 @@ function appendFileEditor(file: LoadedFile) {
   });
   moveUpButton.addEventListener("click", () => moveLoadedFile(file.id, -1));
   moveDownButton.addEventListener("click", () => moveLoadedFile(file.id, 1));
+  let timestampPasteErrorTimeout: ReturnType<typeof setTimeout> | undefined;
+  const updateTimestampCopyButton = () => {
+    timestampCopyButton.disabled = !timestampAddressInputs.some(
+      (input) => input.value.trim() !== "",
+    );
+  };
+  const clearTimestampPasteError = () => {
+    if (timestampPasteErrorTimeout) {
+      clearTimeout(timestampPasteErrorTimeout);
+    }
+    timestampAddressInputs.forEach((input) => input.setCustomValidity(""));
+    timestampPasteError.hidden = true;
+    timestampPasteError.textContent = "";
+  };
+  const showTimestampPasteError = () => {
+    clearTimestampPasteError();
+    const message = "Paste 1–4 non-empty address lines.";
+    timestampAddressInputs.forEach((input) => input.setCustomValidity(message));
+    timestampPasteError.textContent = message;
+    timestampPasteError.hidden = false;
+    timestampPasteErrorTimeout = setTimeout(clearTimestampPasteError, 3000);
+  };
+  timestampCopyButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const lines = timestampAddressInputs
+      .map((input) => input.value.trim())
+      .filter((line) => line !== "");
+    if (lines.length > 0) {
+      void navigator.clipboard?.writeText(lines.join("\n"));
+    }
+  });
+  timestampPasteButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!navigator.clipboard) {
+      showTimestampPasteError();
+      return;
+    }
+    void navigator.clipboard
+      .readText()
+      .then((clipboardValue) => {
+        const lines = parseTimestampAddressClipboard(clipboardValue);
+        if (!lines) {
+          showTimestampPasteError();
+          return;
+        }
+        timestampAddressInputs.forEach((input, index) => {
+          input.value = lines[index] ?? "";
+          input.disabled = false;
+        });
+        timestampEnabledInput.checked = true;
+        clearTimestampPasteError();
+        updateTimestampCopyButton();
+        timestampPanel.open = true;
+        schedulePreviewRefresh(file);
+        reconcileTimestampLabelForm(file);
+      })
+      .catch(showTimestampPasteError);
+  });
   const updateTimestampAddressInputs = () => {
     const enabled = timestampEnabledInput.checked;
     timestampAddressInputs.forEach((input) => {
@@ -4052,11 +4819,33 @@ function appendFileEditor(file: LoadedFile) {
   timestampEnabledInput.addEventListener("change", () => {
     updateTimestampAddressInputs();
     schedulePreviewRefresh(file);
+    if (timestampEnabledInput.checked) {
+      reconcileTimestampLabelForm(file);
+    } else {
+      unlinkPhotoFromTimestampLabel(file.id);
+      refreshTimestampLabelApplyButtons();
+    }
   });
   timestampAddressInputs.forEach((input) => {
-    input.addEventListener("input", () => schedulePreviewRefresh(file));
+    input.addEventListener("input", () => {
+      clearTimestampPasteError();
+      updateTimestampCopyButton();
+      schedulePreviewRefresh(file);
+      reconcileTimestampLabelForm(file);
+    });
   });
-  form.addEventListener("input", () => schedulePreviewRefresh(file));
+  updateTimestampCopyButton();
+  applyTimestampLabelButton.addEventListener("click", () => {
+    if (timestampLabelStates.size === 1) {
+      const state = timestampLabelStates.values().next().value;
+      if (state) {
+        linkPhotoToTimestampLabel(state, file);
+      }
+    }
+  });
+  form.addEventListener("input", () => {
+    schedulePreviewRefresh(file);
+  });
   form.addEventListener("focusout", () => schedulePreviewRefresh(file));
   const updateDimensionsSummary = () => {
     const width = dimensionWidthInput.value || file.dimensions.width.toString();
@@ -4122,6 +4911,7 @@ function appendFileEditor(file: LoadedFile) {
         file.workingBuffer,
         deviceSelect.value,
       );
+      file.jpegStructure = scanJpegStructure(file.workingBuffer);
       file.parsedFields = parseExifDates(file.workingBuffer);
       renderFields(file, form);
       updateDevicePanel(file);
@@ -4202,8 +4992,14 @@ function appendFileEditor(file: LoadedFile) {
   previewColumn.appendChild(previewFrame);
   timestampToggleRow.appendChild(timestampEnabledInput);
   timestampToggleRow.append("Add timestamp to photo");
+  timestampClipboardActions.appendChild(timestampCopyButton);
+  timestampClipboardActions.appendChild(timestampPasteButton);
+  timestampSummary.appendChild(timestampSummaryLabel);
+  timestampSummary.appendChild(timestampClipboardActions);
   timestampGrid.appendChild(timestampToggleRow);
+  timestampGrid.appendChild(applyTimestampLabelButton);
   timestampAddressInputs.forEach((input) => timestampGrid.appendChild(input));
+  timestampGrid.appendChild(timestampPasteError);
   timestampPanel.appendChild(timestampSummary);
   timestampPanel.appendChild(timestampGrid);
   dimensionWidthRow.appendChild(dimensionWidthInput);
@@ -4226,6 +5022,10 @@ function appendFileEditor(file: LoadedFile) {
     timestampPanel,
     timestampEnabledInput,
     timestampAddressInputs,
+    applyTimestampLabelButton,
+    timestampCopyButton,
+    timestampPasteButton,
+    timestampPasteError,
     dimensionsPanel,
     dimensionWidthInput,
     dimensionHeightInput,
@@ -4282,11 +5082,17 @@ function appendFileEditor(file: LoadedFile) {
   meta.appendChild(editorPanel);
   container.appendChild(meta);
   container.appendChild(actions);
-  fileListEl.appendChild(container);
+  if (placeholder) {
+    placeholder.replaceWith(container);
+  } else {
+    fileListEl.appendChild(container);
+  }
 
   renderFields(file, form);
   updateDevicePanel(file);
+  file.previewStateKey = getPreviewStateKey(file);
   refreshLoadedFileControls();
+  refreshTimestampLabelApplyButtons();
 }
 
 // convert EXIF "YYYY:MM:DD HH:MM:SS" to input datetime-local value "YYYY-MM-DDTHH:MM:SS"
@@ -4855,6 +5661,21 @@ export function parseDeviceMetadata(arrayBuffer: ArrayBuffer): DeviceMetadata {
       context.exif.get(TAGS.FocalLengthIn35mmFilm),
     ),
   };
+}
+
+export function parseExifOrientation(arrayBuffer: ArrayBuffer) {
+  try {
+    const context = getDeviceExifContext(arrayBuffer);
+    const orientation = readExifUnsignedInteger(
+      context,
+      context.ifd0.get(TAGS.Orientation),
+    );
+    return orientation && orientation >= 1 && orientation <= 8
+      ? orientation
+      : 1;
+  } catch {
+    return 1;
+  }
 }
 
 export function getMatchingDevicePreset(metadata: DeviceMetadata) {
