@@ -69,10 +69,10 @@ describe('Program Name Input and Presets Dropdown DOM Tests', () => {
     const input = screen.getByLabelText('Program name') as HTMLInputElement;
     const select = screen.getByRole('combobox', { name: 'Program name presets' }) as HTMLSelectElement;
 
-    // Select "Google Android" (value: "Android")
-    fireEvent.change(select, { target: { value: 'Android' } });
+    // Select "Google Pixel" (value: HDR+ string)
+    fireEvent.change(select, { target: { value: 'HDR+ 1.0.585804376zdh' } });
 
-    expect(input.value).toBe('Android');
+    expect(input.value).toBe('HDR+ 1.0.585');
     expect(select.selectedIndex).toBe(0); // selection resets to the "Presets..." option
   });
 

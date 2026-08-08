@@ -4,6 +4,11 @@ import markerIconUrl from "leaflet/dist/images/marker-icon.png?inline";
 import markerIcon2xUrl from "leaflet/dist/images/marker-icon-2x.png?inline";
 import markerShadowUrl from "leaflet/dist/images/marker-shadow.png?inline";
 import ImageWorker from "./imageWorker?worker&inline";
+import {
+  fetchLatestIosBetaVersion,
+  fitSoftwareToField,
+  PROGRAM_NAME_PRESETS,
+} from "./software";
 
 type IDF = {
   type: number;
@@ -246,12 +251,6 @@ const TAGS = {
   JPEG_START: 0xffd8, // JPEG start
 };
 
-const AUTHENTIC_SOFTWARE: Record<string, string> = {
-  Apple: "27.0",
-  samsung: "S928BXXS7AXK2",
-  Google: "HDR+ 1.0.585804376zdh",
-};
-
 const PHOTO_EDITOR_PATTERNS = [
   /photoshop/i,
   /lightroom/i,
@@ -278,14 +277,6 @@ const PHOTO_EDITOR_PATTERNS = [
 
 function isPhotoEditorSoftware(value: string): boolean {
   return PHOTO_EDITOR_PATTERNS.some((pattern) => pattern.test(value));
-}
-
-function getAuthenticSoftware(make?: string): string {
-  if (!make) return AUTHENTIC_SOFTWARE.Apple;
-  for (const [key, value] of Object.entries(AUTHENTIC_SOFTWARE)) {
-    if (make.toLowerCase().includes(key.toLowerCase())) return value;
-  }
-  return AUTHENTIC_SOFTWARE.Apple;
 }
 
 export const DEVICE_PRESETS: DevicePreset[] = [
@@ -2810,7 +2801,9 @@ async function readTextFromClipboard() {
 type GpsCoordinates = { latitude: number; longitude: number };
 
 /** Accept decimal-degree coordinates only, for example `34.0522,-118.2437`. */
-export function parseDecimalDegreeCoordinates(value: string): GpsCoordinates | null {
+export function parseDecimalDegreeCoordinates(
+  value: string,
+): GpsCoordinates | null {
   const match = value
     .trim()
     .match(
@@ -3932,7 +3925,12 @@ export function renderFields(file: LoadedFile, form: HTMLFormElement) {
     if (f._fromFileSystem) {
       row.classList.add("filesystem-field");
     }
-    if (f.name === "Software" && f.type === "text" && typeof f.value === "string" && isPhotoEditorSoftware(f.value)) {
+    if (
+      f.name === "Software" &&
+      f.type === "text" &&
+      typeof f.value === "string" &&
+      isPhotoEditorSoftware(f.value)
+    ) {
       row.classList.add("editor-software-field");
     }
 
@@ -3962,16 +3960,7 @@ export function renderFields(file: LoadedFile, form: HTMLFormElement) {
       placeholderOpt.selected = true;
       select.appendChild(placeholderOpt);
 
-      const presets = [
-        { label: "Clear / Empty", value: "" },
-        { label: "Adobe Photoshop", value: "Adobe Photoshop" },
-        { label: "Adobe Lightroom", value: "Adobe Photoshop Lightroom" },
-        { label: "GIMP", value: "GIMP 2.10" },
-        { label: "Apple iOS", value: "iOS" },
-        { label: "Google Android", value: "Android" },
-      ];
-
-      presets.forEach((preset) => {
+      PROGRAM_NAME_PRESETS.forEach((preset) => {
         const opt = document.createElement("option");
         opt.value = preset.value;
         opt.textContent = preset.label;
@@ -4298,7 +4287,7 @@ function updateSyncButtonVisibility(file: LoadedFile) {
   syncButton.hidden = false;
 }
 
-function syncDateTimeFieldsToOriginal(file: LoadedFile) {
+async function syncDateTimeFieldsToOriginal(file: LoadedFile) {
   if (!file.elements) {
     return;
   }
@@ -4340,7 +4329,11 @@ function syncDateTimeFieldsToOriginal(file: LoadedFile) {
     input.value = sourceValue;
     field.value = fromInputDateTime(sourceValue);
 
-    if (sourceField._timezoneOffset && field._timezoneOffsetValueOffset !== undefined && field._timezoneOffsetCount) {
+    if (
+      sourceField._timezoneOffset &&
+      field._timezoneOffsetValueOffset !== undefined &&
+      field._timezoneOffsetCount
+    ) {
       field._timezoneOffset = sourceField._timezoneOffset;
       const encoded = encoder.encode(sourceField._timezoneOffset);
       const len = Math.min(encoded.length, field._timezoneOffsetCount - 1);
@@ -4350,7 +4343,11 @@ function syncDateTimeFieldsToOriginal(file: LoadedFile) {
       dv.setUint8(field._timezoneOffsetValueOffset + len, 0);
     }
 
-    if (sourceField._subSeconds && field._subSecValueOffset !== undefined && field._subSecCount) {
+    if (
+      sourceField._subSeconds &&
+      field._subSecValueOffset !== undefined &&
+      field._subSecCount
+    ) {
       field._subSeconds = sourceField._subSeconds;
       const encoded = encoder.encode(sourceField._subSeconds);
       const len = Math.min(encoded.length, field._subSecCount - 1);
@@ -4372,8 +4369,12 @@ function syncDateTimeFieldsToOriginal(file: LoadedFile) {
     if (match) {
       const [_, y, mo, d, h, mi, s] = match;
       const utcParts = getGpsUtcPartsFromLocalInput(
-        parseInt(y), parseInt(mo), parseInt(d),
-        parseInt(h), parseInt(mi), parseInt(s),
+        parseInt(y),
+        parseInt(mo),
+        parseInt(d),
+        parseInt(h),
+        parseInt(mi),
+        parseInt(s),
         sourceField._timezoneOffset,
       );
       const localGpsDateTime = getGpsLocalDateTimeFromUtc(
@@ -4388,14 +4389,30 @@ function syncDateTimeFieldsToOriginal(file: LoadedFile) {
   }
 
   // Replace photo-editor Software with authentic value
-  const softwareField = file.parsedFields.find(
+  const softwareFieldIdx = file.parsedFields.findIndex(
     (f) => f.name === "Software" && f.type === "text",
   );
-  if (softwareField && typeof softwareField.value === "string") {
-    const deviceMetadata = parseDeviceMetadata(file.workingBuffer);
-    const authenticValue = getAuthenticSoftware(deviceMetadata.make);
-    if (isPhotoEditorSoftware(softwareField.value) || softwareField.value === "") {
-      softwareField.value = authenticValue.substring(0, softwareField.count - 1);
+  if (softwareFieldIdx >= 0) {
+    const softwareField = file.parsedFields[softwareFieldIdx];
+    if (typeof softwareField.value === "string") {
+      if (
+        isPhotoEditorSoftware(softwareField.value) ||
+        softwareField.value === ""
+      ) {
+        status.textContent = "Fetching latest iOS version...";
+        const iosSoftware = (await fetchLatestIosBetaVersion()).value;
+        const sanitizedValue = fitSoftwareToField(
+          iosSoftware,
+          softwareField.count,
+        );
+        softwareField.value = sanitizedValue;
+        const input = file.elements.form.querySelector(
+          `[data-idx="${softwareFieldIdx}"]`,
+        ) as HTMLInputElement | null;
+        if (input) {
+          input.value = sanitizedValue;
+        }
+      }
     }
   }
 
@@ -5036,9 +5053,9 @@ function appendFileEditor(file: LoadedFile, placeholder?: HTMLElement) {
       updateDevicePanel(file);
     }
   });
-  syncButton.addEventListener("click", () =>
-    syncDateTimeFieldsToOriginal(file),
-  );
+  syncButton.addEventListener("click", () => {
+    void syncDateTimeFieldsToOriginal(file);
+  });
   clearXmpButton.addEventListener("click", () => clearXmpMetadata(file));
   gpsSearchButton.addEventListener("click", () => {
     void handleGpsAddressSearch(file);
@@ -6174,8 +6191,12 @@ export function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
     }
 
     const companionEntries = fieldDef.companionEntries ?? entries;
-    const offsetEntry = fieldDef.offsetTag ? companionEntries.get(fieldDef.offsetTag) : undefined;
-    const subSecEntry = fieldDef.subSecTag ? companionEntries.get(fieldDef.subSecTag) : undefined;
+    const offsetEntry = fieldDef.offsetTag
+      ? companionEntries.get(fieldDef.offsetTag)
+      : undefined;
+    const subSecEntry = fieldDef.subSecTag
+      ? companionEntries.get(fieldDef.subSecTag)
+      : undefined;
 
     results.push({
       label: fieldDef.label,
@@ -6186,14 +6207,16 @@ export function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
       valueOffset: entry.valueOffset,
       value: entry.value,
       type: "datetime",
-      _timezoneOffset: offsetEntry && typeof offsetEntry.value === "string"
-        ? offsetEntry.value
-        : undefined,
+      _timezoneOffset:
+        offsetEntry && typeof offsetEntry.value === "string"
+          ? offsetEntry.value
+          : undefined,
       _timezoneOffsetValueOffset: offsetEntry?.valueOffset,
       _timezoneOffsetCount: offsetEntry?.count,
-      _subSeconds: subSecEntry && typeof subSecEntry.value === "string"
-        ? subSecEntry.value
-        : undefined,
+      _subSeconds:
+        subSecEntry && typeof subSecEntry.value === "string"
+          ? subSecEntry.value
+          : undefined,
       _subSecValueOffset: subSecEntry?.valueOffset,
       _subSecCount: subSecEntry?.count,
     });
