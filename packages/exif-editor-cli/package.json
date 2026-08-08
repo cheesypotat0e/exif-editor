@@ -1,0 +1,37 @@
+{
+  "name": "exif-editor-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "README.md",
+    "scripts/generate-fixtures.mjs",
+    "test/fixtures"
+  ],
+  "bin": {
+    "exif-editor": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "fixtures": "node scripts/generate-fixtures.mjs",
+    "prepack": "pnpm run build",
+    "test": "pnpm run build && node --test --test-isolation=none dist/**/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "exiftool-vendored": "^37.1.0",
+    "sharp": "^0.35.0"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
+    "@types/archiver": "^8.0.0",
+    "@types/node": "^26.1.2",
+    "adm-zip": "^0.6.0",
+    "typescript": "~7.0.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

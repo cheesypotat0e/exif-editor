@@ -6,21 +6,25 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && node scripts/build.mjs",
+    "build:cli": "pnpm --filter exif-editor-cli build",
+    "cli": "node packages/exif-editor-cli/dist/cli.js",
     "preview": "vite preview",
-    "test": "jest"
+    "test": "jest",
+    "test:cli": "pnpm --filter exif-editor-cli test"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
-    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/jest-dom": "^7.0.0",
     "@types/jest": "^30.0.0",
-    "@types/leaflet": "^1.9.21",
-    "@types/node": "^25.9.1",
+    "@types/leaflet": "^1.9.22",
+    "@types/node": "^26.1.2",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "jest": "^30.4.2",
     "jest-environment-jsdom": "^30.4.1",
-    "ts-jest": "^29.4.11",
-    "typescript": "~5.8.3",
-    "vite": "^7.1.0",
-    "vite-plugin-singlefile": "^2.3.0"
+    "ts-jest": "^29.4.12",
+    "typescript": "npm:@typescript/typescript6@~6.0.2",
+    "vite": "^8.2.1",
+    "vite-plugin-singlefile": "^2.3.3"
   },
   "dependencies": {
     "leaflet": "^1.9.4"

@@ -52,7 +52,12 @@ export type EXIFField = {
   _gpsRefCount?: number;
   _gpsAltitudeRefOffset?: number;
   _timezoneOffset?: string;
+  _timezoneOffsetValueOffset?: number;
+  _timezoneOffsetCount?: number;
   _subSeconds?: string;
+  _subSecValueOffset?: number;
+  _subSecCount?: number;
+  _fromFileSystem?: boolean;
 };
 
 type ImageDimensions = {
@@ -240,6 +245,48 @@ const TAGS = {
   BIG_ENDIAN: 0x4d4d,
   JPEG_START: 0xffd8, // JPEG start
 };
+
+const AUTHENTIC_SOFTWARE: Record<string, string> = {
+  Apple: "27.0",
+  samsung: "S928BXXS7AXK2",
+  Google: "HDR+ 1.0.585804376zdh",
+};
+
+const PHOTO_EDITOR_PATTERNS = [
+  /photoshop/i,
+  /lightroom/i,
+  /gimp/i,
+  /affinity/i,
+  /snapseed/i,
+  /capture one/i,
+  /darktable/i,
+  /rawtherapee/i,
+  /luminar/i,
+  /pixelmator/i,
+  /paint\.net/i,
+  /acdsee/i,
+  /corel/i,
+  /photopea/i,
+  /canva/i,
+  /polarr/i,
+  /vsco/i,
+  /adobe/i,
+  /fotor/i,
+  /inshot/i,
+  /picsart/i,
+];
+
+function isPhotoEditorSoftware(value: string): boolean {
+  return PHOTO_EDITOR_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+function getAuthenticSoftware(make?: string): string {
+  if (!make) return AUTHENTIC_SOFTWARE.Apple;
+  for (const [key, value] of Object.entries(AUTHENTIC_SOFTWARE)) {
+    if (make.toLowerCase().includes(key.toLowerCase())) return value;
+  }
+  return AUTHENTIC_SOFTWARE.Apple;
+}
 
 export const DEVICE_PRESETS: DevicePreset[] = [
   {
@@ -805,7 +852,7 @@ async function handleGpsAddressSearch(file: LoadedFile) {
   }
 }
 
-function sanitizeFilename(name: string, fallbackName: string) {
+export function sanitizeFilename(name: string, fallbackName: string) {
   const trimmed = name.trim().replace(/[\\/:*?"<>|]+/g, "-");
   const fallbackBase = fallbackName.replace(/\.[^.]+$/, "") || "image";
   const fallbackExtension = getFileExtension(fallbackName);
@@ -825,7 +872,7 @@ function getDownloadFilename(file: LoadedFile) {
   return sanitizeFilename(file.filename, file.originalFilename);
 }
 
-function getXmpSegmentRanges(arrayBuffer: ArrayBuffer) {
+export function getXmpSegmentRanges(arrayBuffer: ArrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
   const xmpHeader = "http://ns.adobe.com/xap/1.0/\0";
   const decoder = new TextDecoder();
@@ -873,7 +920,7 @@ function getXmpSegmentRanges(arrayBuffer: ArrayBuffer) {
   return ranges;
 }
 
-function createJpegBlobWithoutXmp(
+export function createJpegBlobWithoutXmp(
   arrayBuffer: ArrayBuffer,
   cachedRanges?: Array<{ start: number; end: number }>,
 ) {
@@ -1161,10 +1208,7 @@ function getTimestampLabelStateForPhoto(fileId: string) {
   return labelId ? (timestampLabelStates.get(labelId) ?? null) : null;
 }
 
-function createTimestampLabelState(
-  fileId: string,
-  lines: TimestampLabelLines,
-) {
+function createTimestampLabelState(fileId: string, lines: TimestampLabelLines) {
   const state: TimestampLabelState = {
     id: `timestamp-label-${++timestampLabelStateSequence}`,
     lines: [...lines],
@@ -1375,13 +1419,7 @@ async function renderJpegFallback(source: Blob, options: ImageRenderOptions) {
   }
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
-  drawOrientedCanvasImage(
-    context,
-    image,
-    width,
-    height,
-    orientationToApply,
-  );
+  drawOrientedCanvasImage(context, image, width, height, orientationToApply);
 
   if (options.overlay) {
     drawTimestampOverlay(
@@ -1674,16 +1712,8 @@ export function normalizeRenderedExifSegment(
   if (exifPointerEntry !== null) {
     const exifIFDOffset =
       tiffStartOffset + view.getUint32(exifPointerEntry + 8, littleEndian);
-    updateUnsignedTag(
-      exifIFDOffset,
-      TAGS.ExifImageWidth,
-      dimensions.width,
-    );
-    updateUnsignedTag(
-      exifIFDOffset,
-      TAGS.ExifImageHeight,
-      dimensions.height,
-    );
+    updateUnsignedTag(exifIFDOffset, TAGS.ExifImageWidth, dimensions.width);
+    updateUnsignedTag(exifIFDOffset, TAGS.ExifImageHeight, dimensions.height);
   }
 
   return updated;
@@ -1704,14 +1734,11 @@ function createJpegRenderSource(
   let replacedExif = false;
   for (const range of structure.metadataRanges) {
     const segment = bytes.subarray(range.start, range.end);
-    const normalized = normalizeRenderedExifSegment(
-      segment,
-      encodedDimensions,
-    );
+    const normalized = normalizeRenderedExifSegment(segment, encodedDimensions);
     if (normalized === segment) {
       continue;
     }
-    parts.push(bytes.subarray(cursor, range.start), normalized);
+    parts.push(bytes.subarray(cursor, range.start), normalized as BlobPart);
     cursor = range.end;
     replacedExif = true;
   }
@@ -1728,7 +1755,6 @@ function getFileRenderSource(file: LoadedFile) {
   }
   return createJpegRenderSource(file.workingBuffer, file.jpegStructure);
 }
-
 
 async function getEditedBlob(file: LoadedFile) {
   applyFormToWorkingBuffer(file);
@@ -1749,22 +1775,19 @@ async function getEditedBlob(file: LoadedFile) {
   const metadataSegments = getFileMetadataSegments(file).map((segment) =>
     normalizeRenderedExifSegment(segment, requestedDimensions),
   );
-  const renderedBlob = await renderJpegInWorker(
-    getFileRenderSource(file),
-    {
-      width: requestedDimensions.width,
-      height: requestedDimensions.height,
-      quality: hasOverlay ? 0.95 : 0.92,
-      orientation: file.orientation ?? 1,
-      overlay:
-        hasOverlay && timestampDate
-          ? {
-              date: timestampDate,
-              addressLines: getTimestampAddressLines(file),
-            }
-          : undefined,
-    },
-  );
+  const renderedBlob = await renderJpegInWorker(getFileRenderSource(file), {
+    width: requestedDimensions.width,
+    height: requestedDimensions.height,
+    quality: hasOverlay ? 0.95 : 0.92,
+    orientation: file.orientation ?? 1,
+    overlay:
+      hasOverlay && timestampDate
+        ? {
+            date: timestampDate,
+            addressLines: getTimestampAddressLines(file),
+          }
+        : undefined,
+  });
   const renderedBuffer = await renderedBlob.arrayBuffer();
   return new Blob(
     [insertJpegMetadataSegments(renderedBuffer, metadataSegments)],
@@ -1880,7 +1903,7 @@ function getPreviewStateKey(file: LoadedFile) {
   });
 }
 
-function getUniqueFilenames(names: string[]) {
+export function getUniqueFilenames(names: string[]) {
   const seen = new Map<string, number>();
 
   return names.map((name) => {
@@ -2043,7 +2066,7 @@ export async function createStoredZip(
     localView.setUint16(26, nameBytes.length, true);
     localView.setUint16(28, 0, true);
     local.set(nameBytes, 30);
-    localParts.push(local, data);
+    localParts.push(local as BlobPart, data as BlobPart);
 
     const central = new Uint8Array(46 + nameBytes.length);
     const centralView = new DataView(central.buffer);
@@ -2082,11 +2105,7 @@ export async function createStoredZip(
 
   // Ensure all parts are of type BlobPart (Uint8Array is allowed)
   return new Blob(
-    [
-      ...localParts,
-      ...(centralParts as BlobPart[]),
-      endRecord as BlobPart,
-    ],
+    [...localParts, ...(centralParts as BlobPart[]), endRecord as BlobPart],
     {
       type: "application/zip",
     },
@@ -2147,7 +2166,7 @@ async function shareLoadedFile(fileId: string) {
   }
 }
 
-function parseXmpMetadata(arrayBuffer: ArrayBuffer): XMPMetadata | null {
+export function parseXmpMetadata(arrayBuffer: ArrayBuffer): XMPMetadata | null {
   const bytes = new Uint8Array(arrayBuffer);
   const xmpHeader = "http://ns.adobe.com/xap/1.0/\0";
   const decoder = new TextDecoder();
@@ -2340,6 +2359,31 @@ async function processImportedFile(file: File): Promise<LoadedFile> {
     }
   }
 
+  const hasModifyDate = fileFields.some(
+    (f) => f.name === "ModifyDate" && f.type === "datetime",
+  );
+  if (!hasModifyDate && file.lastModified) {
+    const d = new Date(file.lastModified);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const hours = String(d.getHours()).padStart(2, "0");
+    const minutes = String(d.getMinutes()).padStart(2, "0");
+    const seconds = String(d.getSeconds()).padStart(2, "0");
+    const exifValue = `${year}:${month}:${day} ${hours}:${minutes}:${seconds}`;
+    fileFields.push({
+      label: "ModifyDate (File System)",
+      name: "ModifyDate",
+      ifd: "0th",
+      tag: 0x0132,
+      count: 20,
+      valueOffset: -1,
+      value: exifValue,
+      type: "datetime",
+      _fromFileSystem: true,
+    });
+  }
+
   return {
     id: crypto.randomUUID(),
     filename: file.name,
@@ -2508,7 +2552,7 @@ function closeImageModal() {
   document.body.classList.remove("modal-open");
 }
 
-function parseInputDateTimeValue(value: string) {
+export function parseInputDateTimeValue(value: string) {
   const match = value.match(
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/,
   );
@@ -2534,7 +2578,7 @@ function parseInputDateTimeValue(value: string) {
   return date;
 }
 
-function formatPickerDateTimeValue(date: Date) {
+export function formatPickerDateTimeValue(date: Date) {
   const y = date.getFullYear().toString().padStart(4, "0");
   const m = (date.getMonth() + 1).toString().padStart(2, "0");
   const d = date.getDate().toString().padStart(2, "0");
@@ -2545,7 +2589,7 @@ function formatPickerDateTimeValue(date: Date) {
   return `${y}-${m}-${d}T${hh}:${mm}:${ss}`;
 }
 
-function parseExifOffsetMinutes(offset?: string) {
+export function parseExifOffsetMinutes(offset?: string) {
   if (!offset) {
     return null;
   }
@@ -2762,7 +2806,7 @@ async function readTextFromClipboard() {
 type GpsCoordinates = { latitude: number; longitude: number };
 
 /** Accept decimal-degree coordinates only, for example `34.0522,-118.2437`. */
-function parseDecimalDegreeCoordinates(value: string): GpsCoordinates | null {
+export function parseDecimalDegreeCoordinates(value: string): GpsCoordinates | null {
   const match = value
     .trim()
     .match(
@@ -3881,6 +3925,12 @@ export function renderFields(file: LoadedFile, form: HTMLFormElement) {
 
     label.id = labelId;
     label.textContent = f.label;
+    if (f._fromFileSystem) {
+      row.classList.add("filesystem-field");
+    }
+    if (f.name === "Software" && f.type === "text" && typeof f.value === "string" && isPhotoEditorSoftware(f.value)) {
+      row.classList.add("editor-software-field");
+    }
 
     let control: HTMLElement;
 
@@ -4079,7 +4129,8 @@ export function renderFields(file: LoadedFile, form: HTMLFormElement) {
 
       if (f.name === "GPSLatitude") {
         const longitudeIndex = file.parsedFields.findIndex(
-          (field) => field.name === "GPSLongitude" && field.type === "coordinate",
+          (field) =>
+            field.name === "GPSLongitude" && field.type === "coordinate",
         );
         if (longitudeIndex !== -1) {
           const group = document.createElement("div");
@@ -4137,21 +4188,24 @@ export function renderFields(file: LoadedFile, form: HTMLFormElement) {
               `[data-idx="${longitudeIndex}"]`,
             ) as HTMLInputElement | null;
             const coordinates = longitudeInput
-              ? parseDecimalDegreeCoordinates(`${input.value},${longitudeInput.value}`)
+              ? parseDecimalDegreeCoordinates(
+                  `${input.value},${longitudeInput.value}`,
+                )
               : null;
             if (!coordinates) {
               showError("Enter valid GPS coordinates first.");
               return;
             }
-            void copyTextToClipboard(`${input.value},${longitudeInput!.value}`).catch(
-              () => showError("Could not copy GPS coordinates."),
-            );
+            void copyTextToClipboard(
+              `${input.value},${longitudeInput!.value}`,
+            ).catch(() => showError("Could not copy GPS coordinates."));
           });
 
           pasteButton.addEventListener("click", () => {
             void readTextFromClipboard()
               .then((clipboardText) => {
-                const coordinates = parseDecimalDegreeCoordinates(clipboardText);
+                const coordinates =
+                  parseDecimalDegreeCoordinates(clipboardText);
                 const longitudeInput = form.querySelector(
                   `[data-idx="${longitudeIndex}"]`,
                 ) as HTMLInputElement | null;
@@ -4169,7 +4223,9 @@ export function renderFields(file: LoadedFile, form: HTMLFormElement) {
                 input.value = coordinates.latitude.toString();
                 longitudeInput.value = coordinates.longitude.toString();
                 input.dispatchEvent(new Event("input", { bubbles: true }));
-                longitudeInput.dispatchEvent(new Event("input", { bubbles: true }));
+                longitudeInput.dispatchEvent(
+                  new Event("input", { bubbles: true }),
+                );
               })
               .catch(() => showError("Could not read GPS coordinates."));
           });
@@ -4230,45 +4286,12 @@ function getSyncSourceField(file: LoadedFile) {
   );
 }
 
-function getPrimaryExifDateTimeFields(file: LoadedFile) {
-  const primaryFieldNames = new Set([
-    "ModifyDate",
-    "DateTimeOriginal",
-    "CreateDate",
-  ]);
-  return file.parsedFields.filter(
-    (field) => field.type === "datetime" && primaryFieldNames.has(field.name),
-  );
-}
-
-function getComparableExifEpoch(field: EXIFField) {
-  if (typeof field.value !== "string") {
-    return null;
-  }
-
-  const date = parseInputDateTimeValue(toInputDateTime(field.value));
-  if (!date) {
-    return null;
-  }
-
-  return getEpochTimestampValue(date, field._timezoneOffset, field._subSeconds);
-}
-
-function hasPrimaryExifDateTimeMismatch(file: LoadedFile) {
-  const comparableEpochs = getPrimaryExifDateTimeFields(file)
-    .map((field) => getComparableExifEpoch(field))
-    .filter((epoch): epoch is string => epoch !== null);
-
-  return comparableEpochs.length > 1 && new Set(comparableEpochs).size > 1;
-}
-
 function updateSyncButtonVisibility(file: LoadedFile) {
   const syncButton = file.elements?.syncButton;
   if (!syncButton) {
     return;
   }
-
-  syncButton.hidden = !hasPrimaryExifDateTimeMismatch(file);
+  syncButton.hidden = false;
 }
 
 function syncDateTimeFieldsToOriginal(file: LoadedFile) {
@@ -4286,11 +4309,19 @@ function syncDateTimeFieldsToOriginal(file: LoadedFile) {
     return;
   }
 
+  const dv = new DataView(file.workingBuffer);
+  const encoder = new TextEncoder();
+
   file.parsedFields.forEach((field, idx) => {
     if (
       field.type !== "datetime" ||
       !["ModifyDate", "DateTimeOriginal", "CreateDate"].includes(field.name)
     ) {
+      return;
+    }
+
+    if (field._fromFileSystem) {
+      field.value = fromInputDateTime(sourceValue);
       return;
     }
 
@@ -4304,14 +4335,80 @@ function syncDateTimeFieldsToOriginal(file: LoadedFile) {
 
     input.value = sourceValue;
     field.value = fromInputDateTime(sourceValue);
+
+    if (sourceField._timezoneOffset && field._timezoneOffsetValueOffset !== undefined && field._timezoneOffsetCount) {
+      field._timezoneOffset = sourceField._timezoneOffset;
+      const encoded = encoder.encode(sourceField._timezoneOffset);
+      const len = Math.min(encoded.length, field._timezoneOffsetCount - 1);
+      for (let i = 0; i < len; i++) {
+        dv.setUint8(field._timezoneOffsetValueOffset + i, encoded[i]);
+      }
+      dv.setUint8(field._timezoneOffsetValueOffset + len, 0);
+    }
+
+    if (sourceField._subSeconds && field._subSecValueOffset !== undefined && field._subSecCount) {
+      field._subSeconds = sourceField._subSeconds;
+      const encoded = encoder.encode(sourceField._subSeconds);
+      const len = Math.min(encoded.length, field._subSecCount - 1);
+      for (let i = 0; i < len; i++) {
+        dv.setUint8(field._subSecValueOffset + i, encoded[i]);
+      }
+      dv.setUint8(field._subSecValueOffset + len, 0);
+    }
   });
+
+  // Sync GPS DateTime to UTC equivalent of capture time
+  const gpsField = file.parsedFields.find(
+    (f) => f.name === "GPSDateTime" && f.ifd === "GPS",
+  );
+  if (gpsField && sourceField._timezoneOffset) {
+    const match = (sourceField.value as string).match(
+      /(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/,
+    );
+    if (match) {
+      const [_, y, mo, d, h, mi, s] = match;
+      const utcParts = getGpsUtcPartsFromLocalInput(
+        parseInt(y), parseInt(mo), parseInt(d),
+        parseInt(h), parseInt(mi), parseInt(s),
+        sourceField._timezoneOffset,
+      );
+      const localGpsDateTime = getGpsLocalDateTimeFromUtc(
+        `${utcParts.year}:${String(utcParts.month).padStart(2, "0")}:${String(utcParts.day).padStart(2, "0")}`,
+        [utcParts.hours, utcParts.minutes, utcParts.seconds],
+        sourceField._timezoneOffset,
+      );
+      if (localGpsDateTime) {
+        gpsField.value = `${localGpsDateTime.date.year}:${localGpsDateTime.date.month}:${localGpsDateTime.date.day} ${localGpsDateTime.time.hours}:${localGpsDateTime.time.minutes}:${localGpsDateTime.time.seconds}`;
+      }
+    }
+  }
+
+  // Replace photo-editor Software with authentic value
+  const softwareField = file.parsedFields.find(
+    (f) => f.name === "Software" && f.type === "text",
+  );
+  if (softwareField && typeof softwareField.value === "string") {
+    const deviceMetadata = parseDeviceMetadata(file.workingBuffer);
+    const authenticValue = getAuthenticSoftware(deviceMetadata.make);
+    if (isPhotoEditorSoftware(softwareField.value) || softwareField.value === "") {
+      softwareField.value = authenticValue.substring(0, softwareField.count - 1);
+    }
+  }
+
+  // Clear XMP metadata
+  if (file.xmpMetadata) {
+    file.xmpRemoved = true;
+    file.xmpMetadata = null;
+  }
 
   applyFormToWorkingBuffer(file);
   renderFields(file, file.elements.form);
+  if (file.elements) {
+    renderXmpPanel(file, file.elements.xmpPanel);
+    file.elements.clearXmpButton.hidden = true;
+  }
   updateSyncButtonVisibility(file);
-  status.textContent = `Synced EXIF timestamps for ${getDownloadFilename(
-    file,
-  )}.`;
+  status.textContent = `Sanitized ${getDownloadFilename(file)}.`;
 }
 
 function renderXmpPanel(file: LoadedFile, panel: HTMLDivElement) {
@@ -4596,13 +4693,19 @@ function appendFileEditor(file: LoadedFile, placeholder?: HTMLElement) {
   timestampCopyButton.className =
     "datetime-picker-copy datetime-picker-action clipboard-icon-button";
   timestampCopyButton.innerHTML = COPY_ICON_SVG;
-  timestampCopyButton.setAttribute("aria-label", "Copy timestamp label address lines");
+  timestampCopyButton.setAttribute(
+    "aria-label",
+    "Copy timestamp label address lines",
+  );
   timestampCopyButton.title = "Copy timestamp label address lines";
   timestampPasteButton.type = "button";
   timestampPasteButton.className =
     "datetime-picker-copy datetime-picker-action clipboard-icon-button";
   timestampPasteButton.innerHTML = PASTE_ICON_SVG;
-  timestampPasteButton.setAttribute("aria-label", "Paste timestamp label address lines");
+  timestampPasteButton.setAttribute(
+    "aria-label",
+    "Paste timestamp label address lines",
+  );
   timestampPasteButton.title = "Paste timestamp label address lines";
   timestampGrid.className = "timestamp-grid";
   timestampPasteError.className = "timestamp-paste-error";
@@ -4717,8 +4820,8 @@ function appendFileEditor(file: LoadedFile, placeholder?: HTMLElement) {
   actions.className = "file-card-actions";
   syncButton.type = "button";
   syncButton.className = "warning";
-  syncButton.textContent = "Sync timestamps";
-  syncButton.hidden = !hasPrimaryExifDateTimeMismatch(file);
+  syncButton.textContent = "Sanitize";
+  syncButton.hidden = false;
   clearXmpButton.type = "button";
   clearXmpButton.className = "warning";
   clearXmpButton.textContent = "Clear XMP";
@@ -5205,6 +5308,9 @@ export function applyFormToWorkingBuffer(file: LoadedFile) {
     const idx = Number(inp.dataset.idx);
 
     const field = parsedFields[idx];
+    if (field._fromFileSystem) {
+      return;
+    }
 
     let newVal: string | number[];
 
@@ -5475,10 +5581,7 @@ function getTiffTypeSize(type: number) {
 
 function getDeviceExifContext(arrayBuffer: ArrayBuffer): ExifRewriteContext {
   const view = new DataView(arrayBuffer);
-  if (
-    view.byteLength < 12 ||
-    view.getUint16(0, false) !== TAGS.JPEG_START
-  ) {
+  if (view.byteLength < 12 || view.getUint16(0, false) !== TAGS.JPEG_START) {
     throw new Error("Not a JPEG");
   }
 
@@ -5567,8 +5670,7 @@ function getDeviceExifContext(arrayBuffer: ArrayBuffer): ExifRewriteContext {
   const exifPointer = ifd0.get(TAGS.ExifIFDPointer);
   const exifOffset =
     exifPointer && typeof exifPointer.valueOffset === "number"
-      ? tiffStart +
-        view.getUint32(exifPointer.valueOffset, littleEndian)
+      ? tiffStart + view.getUint32(exifPointer.valueOffset, littleEndian)
       : -1;
   const exif = exifOffset >= tiffStart ? readEntries(exifOffset) : new Map();
 
@@ -5584,10 +5686,7 @@ function getDeviceExifContext(arrayBuffer: ArrayBuffer): ExifRewriteContext {
   };
 }
 
-function readExifAscii(
-  context: ExifRewriteContext,
-  entry?: ExifRewriteEntry,
-) {
+function readExifAscii(context: ExifRewriteContext, entry?: ExifRewriteEntry) {
   if (!entry || entry.type !== 2) {
     return undefined;
   }
@@ -5646,10 +5745,7 @@ export function parseDeviceMetadata(arrayBuffer: ArrayBuffer): DeviceMetadata {
   return {
     make: readExifAscii(context, context.ifd0.get(TAGS.Make)),
     model: readExifAscii(context, context.ifd0.get(TAGS.Model)),
-    hostComputer: readExifAscii(
-      context,
-      context.ifd0.get(TAGS.HostComputer),
-    ),
+    hostComputer: readExifAscii(context, context.ifd0.get(TAGS.HostComputer)),
     lensMake: readExifAscii(context, context.exif.get(TAGS.LensMake)),
     lensModel: readExifAscii(context, context.exif.get(TAGS.LensModel)),
     lensSpecification: readExifRationals(
@@ -5688,10 +5784,8 @@ export function getMatchingDevicePreset(metadata: DeviceMetadata) {
       expected.hostComputer === metadata.hostComputer &&
       expected.lensMake === metadata.lensMake &&
       expected.lensModel === metadata.lensModel &&
-      expected.focalLengthIn35mmFormat ===
-        metadata.focalLengthIn35mmFormat &&
-      actualLensSpecification?.length ===
-        expected.lensSpecification.length &&
+      expected.focalLengthIn35mmFormat === metadata.focalLengthIn35mmFormat &&
+      actualLensSpecification?.length === expected.lensSpecification.length &&
       expected.lensSpecification.every(
         (value, index) =>
           Math.abs(value - (actualLensSpecification[index] ?? Infinity)) <
@@ -5750,19 +5844,12 @@ export function applyDevicePresetToBuffer(
   if (
     lensSpecificationEntry &&
     lensSpecificationEntry.type === 5 &&
-    lensSpecificationEntry.count ===
-      preset.lensSpecificationRationals.length
+    lensSpecificationEntry.count === preset.lensSpecificationRationals.length
   ) {
-    const bytes = new Uint8Array(
-      preset.lensSpecificationRationals.length * 8,
-    );
+    const bytes = new Uint8Array(preset.lensSpecificationRationals.length * 8);
     const rationalView = new DataView(bytes.buffer);
     preset.lensSpecificationRationals.forEach((value, index) => {
-      rationalView.setUint32(
-        index * 8,
-        value.numerator,
-        context.littleEndian,
-      );
+      rationalView.setUint32(index * 8, value.numerator, context.littleEndian);
       rationalView.setUint32(
         index * 8 + 4,
         value.denominator,
@@ -6065,11 +6152,6 @@ export function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
     return { entries, nextIFD };
   }
 
-  function getAsciiValue(entries: Map<number, IDF>, tag: number) {
-    const entry = entries.get(tag);
-    return typeof entry?.value === "string" ? entry.value : undefined;
-  }
-
   function pushDateTimeField(
     entries: Map<number, IDF>,
     fieldDef: {
@@ -6088,6 +6170,8 @@ export function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
     }
 
     const companionEntries = fieldDef.companionEntries ?? entries;
+    const offsetEntry = fieldDef.offsetTag ? companionEntries.get(fieldDef.offsetTag) : undefined;
+    const subSecEntry = fieldDef.subSecTag ? companionEntries.get(fieldDef.subSecTag) : undefined;
 
     results.push({
       label: fieldDef.label,
@@ -6098,12 +6182,16 @@ export function parseExifDates(arrayBuffer: ArrayBuffer): EXIFField[] {
       valueOffset: entry.valueOffset,
       value: entry.value,
       type: "datetime",
-      _timezoneOffset: fieldDef.offsetTag
-        ? getAsciiValue(companionEntries, fieldDef.offsetTag)
+      _timezoneOffset: offsetEntry && typeof offsetEntry.value === "string"
+        ? offsetEntry.value
         : undefined,
-      _subSeconds: fieldDef.subSecTag
-        ? getAsciiValue(companionEntries, fieldDef.subSecTag)
+      _timezoneOffsetValueOffset: offsetEntry?.valueOffset,
+      _timezoneOffsetCount: offsetEntry?.count,
+      _subSeconds: subSecEntry && typeof subSecEntry.value === "string"
+        ? subSecEntry.value
         : undefined,
+      _subSecValueOffset: subSecEntry?.valueOffset,
+      _subSecCount: subSecEntry?.count,
     });
   }
 

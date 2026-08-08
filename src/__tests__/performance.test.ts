@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { cliFixture, loadBuffer, setupMainDom } from "./support/helpers";
 
 let scanJpegStructure: typeof import("../main").scanJpegStructure;
 let createStoredZip: typeof import("../main").createStoredZip;
@@ -10,16 +11,7 @@ let getContainedDimensions: typeof import("../main").getContainedDimensions;
 let normalizeRenderedExifSegment: typeof import("../main").normalizeRenderedExifSegment;
 
 beforeAll(async () => {
-  document.body.innerHTML = `
-    <div id="uploader"></div>
-    <input id="fileInput" type="file" />
-    <div id="imageModal"></div>
-    <div id="imageModalBackdrop"></div>
-    <img id="modalPreview" />
-    <div id="fileList"></div>
-    <div id="status"></div>
-    <button id="downloadAllButton"></button>
-  `;
+  setupMainDom();
   const main = await import("../main");
   scanJpegStructure = main.scanJpegStructure;
   createStoredZip = main.createStoredZip;
@@ -169,4 +161,56 @@ describe("performance architecture", () => {
     expect(parseExifOrientation(output)).toBe(1);
     expect(parseExifOrientation(oriented)).toBe(6);
   });
+
+  it("runWithConcurrency handles an empty list", async () => {
+    await runWithConcurrency([], 2, async () => {
+      throw new Error("should not run");
+    });
+  });
+
+  it("runWithConcurrency propagates task errors", async () => {
+    await expect(
+      runWithConcurrency([1], 1, async () => {
+        throw new Error("task failed");
+      }),
+    ).rejects.toThrow("task failed");
+  });
+
+  it("createStoredZip handles an empty archive", async () => {
+    const archive = await createStoredZip([]);
+    const archiveBuffer = await new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new globalThis.FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(archive);
+    });
+    expect(new Uint8Array(archiveBuffer).length).toBe(22);
+  });
+
+  it("createStoredZip supports unicode filenames", async () => {
+    const archive = await createStoredZip([
+      { name: "ümlaut-照片.jpg", data: new Uint8Array([7, 8, 9]) },
+    ]);
+    const archiveBuffer = await new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new globalThis.FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(archive);
+    });
+    const bytes = new Uint8Array(archiveBuffer);
+    const view = new DataView(bytes.buffer);
+    expect(view.getUint32(0, true)).toBe(0x04034b50);
+    const nameLength = view.getUint16(26, true);
+    const name = new TextDecoder().decode(bytes.subarray(30, 30 + nameLength));
+    expect(name).toBe("ümlaut-照片.jpg");
+  });
+});
+
+describe("parseExifOrientation fixtures", () => {
+  for (let orientation = 1; orientation <= 8; orientation++) {
+    it(`reads orientation ${orientation}`, () => {
+      const buffer = loadBuffer(cliFixture(`orientation-${orientation}.jpg`));
+      expect(parseExifOrientation(buffer)).toBe(orientation);
+    });
+  }
 });

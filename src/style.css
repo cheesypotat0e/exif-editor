@@ -512,6 +512,26 @@ form#fields,
   row-gap: 10px;
   align-items: center;
 }
+.row.filesystem-field label {
+  color: #f0a040;
+}
+.row.filesystem-field::after {
+  content: "from file system";
+  grid-column: 1 / -1;
+  font-size: 0.75rem;
+  color: #f0a040;
+  margin-top: -6px;
+}
+.row.editor-software-field label {
+  color: #e05050;
+}
+.row.editor-software-field::after {
+  content: "⚠ photo editor detected — sanitize to replace";
+  grid-column: 1 / -1;
+  font-size: 0.75rem;
+  color: #e05050;
+  margin-top: -6px;
+}
 .gps-coordinate-group {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
