@@ -22,6 +22,12 @@ export const PROGRAM_NAME_PRESETS: ProgramNamePreset[] = [
   { label: "Google Pixel", value: AUTHENTIC_SOFTWARE.google },
 ];
 
+export const MIN_SOFTWARE_FIELD_COUNT = Math.max(
+  32,
+  ...PROGRAM_NAME_PRESETS.map((preset) => preset.value.length + 1),
+  ...Object.values(AUTHENTIC_SOFTWARE).map((value) => value.length + 1),
+);
+
 export type SoftwareResolution = {
   value: string;
   source: "apple" | "fallback";

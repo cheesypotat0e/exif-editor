@@ -7,6 +7,7 @@ import ImageWorker from "./imageWorker?worker&inline";
 import {
   fetchLatestIosBetaVersion,
   fitSoftwareToField,
+  MIN_SOFTWARE_FIELD_COUNT,
   PROGRAM_NAME_PRESETS,
 } from "./software";
 
@@ -2379,7 +2380,7 @@ async function processImportedFile(file: File): Promise<LoadedFile> {
     });
   }
 
-  return {
+  const loadedFile: LoadedFile = {
     id: crypto.randomUUID(),
     filename: file.name,
     originalFilename: file.name,
@@ -2393,6 +2394,8 @@ async function processImportedFile(file: File): Promise<LoadedFile> {
     previewUrl: URL.createObjectURL(file),
     thumbnailUrl: await thumbnailPromise,
   };
+  expandSoftwareFieldCapacity(loadedFile);
+  return loadedFile;
 }
 
 async function handleFileList(list: FileList | null) {
@@ -4392,13 +4395,14 @@ async function syncDateTimeFieldsToOriginal(file: LoadedFile) {
   const softwareFieldIdx = file.parsedFields.findIndex(
     (f) => f.name === "Software" && f.type === "text",
   );
-  if (softwareFieldIdx >= 0) {
+    if (softwareFieldIdx >= 0) {
     const softwareField = file.parsedFields[softwareFieldIdx];
     if (typeof softwareField.value === "string") {
       if (
         isPhotoEditorSoftware(softwareField.value) ||
         softwareField.value === ""
       ) {
+        expandSoftwareFieldCapacity(file);
         status.textContent = "Fetching latest iOS version...";
         const iosSoftware = (await fetchLatestIosBetaVersion()).value;
         const sanitizedValue = fitSoftwareToField(
@@ -5321,8 +5325,8 @@ export function applyFormToWorkingBuffer(file: LoadedFile) {
   ) as NodeListOf<HTMLInputElement>;
 
   const parsedFields = file.parsedFields;
-  const dv = new DataView(file.workingBuffer);
-  const littleEndian = getExifLittleEndian(dv);
+  let dv = new DataView(file.workingBuffer);
+  let littleEndian = getExifLittleEndian(dv);
   const photoTimezoneOffset = getPreferredPhotoOffset(parsedFields);
 
   inputs.forEach((inp: HTMLInputElement) => {
@@ -5336,6 +5340,17 @@ export function applyFormToWorkingBuffer(file: LoadedFile) {
     let newVal: string | number[];
 
     if (field.type === "text") {
+      if (field.name === "Software") {
+        const neededCount = Math.max(
+          MIN_SOFTWARE_FIELD_COUNT,
+          inp.value.length + 1,
+        );
+        if (field.count < neededCount) {
+          expandSoftwareFieldCapacity(file, neededCount);
+          dv = new DataView(file.workingBuffer);
+          littleEndian = getExifLittleEndian(dv);
+        }
+      }
       newVal = inp.value;
     } else if (field.type === "date") {
       // Use the original fromInputDate function
@@ -5946,6 +5961,89 @@ export function applyDevicePresetToBuffer(
   }
 
   return updated.buffer;
+}
+
+function expandExifAsciiField(
+  arrayBuffer: ArrayBuffer,
+  entry: ExifRewriteEntry,
+  context: ExifRewriteContext,
+  minCount: number,
+  currentValue: string,
+): ArrayBuffer | null {
+  if (entry.type !== 2 || entry.count >= minCount) {
+    return null;
+  }
+
+  const encoded = new TextEncoder().encode(currentValue);
+  const bytes = new Uint8Array(minCount);
+  bytes.set(encoded.subarray(0, Math.min(encoded.length, minCount - 1)), 0);
+
+  const appendedLength = bytes.length;
+  const nextSegmentLength = context.segmentLength + appendedLength;
+  if (nextSegmentLength > 0xffff) {
+    throw new Error("The updated EXIF APP1 segment exceeds the JPEG limit");
+  }
+
+  const offset = context.segmentEnd;
+  const original = new Uint8Array(arrayBuffer);
+  const updated = new Uint8Array(original.length + appendedLength);
+  updated.set(original.subarray(0, context.segmentEnd), 0);
+  updated.set(bytes, offset);
+  updated.set(original.subarray(context.segmentEnd), offset + appendedLength);
+
+  const updatedView = new DataView(updated.buffer);
+  updatedView.setUint16(context.segmentStart + 2, nextSegmentLength, false);
+  updatedView.setUint32(entry.entryOffset + 4, bytes.length, context.littleEndian);
+  updatedView.setUint32(
+    entry.entryOffset + 8,
+    offset - context.tiffStart,
+    context.littleEndian,
+  );
+
+  return updated.buffer;
+}
+
+export function expandSoftwareFieldCapacity(
+  file: LoadedFile,
+  minCount: number = MIN_SOFTWARE_FIELD_COUNT,
+): boolean {
+  const softwareField = file.parsedFields.find(
+    (field) => field.name === "Software" && field.type === "text",
+  );
+  if (!softwareField || softwareField.count >= minCount) {
+    return false;
+  }
+
+  let context: ExifRewriteContext;
+  try {
+    context = getDeviceExifContext(file.workingBuffer);
+  } catch {
+    return false;
+  }
+
+  const entry = context.ifd0.get(TAGS.Software);
+  if (!entry || entry.type !== 2) {
+    return false;
+  }
+
+  const currentValue =
+    typeof softwareField.value === "string" ? softwareField.value : "";
+  const expanded = expandExifAsciiField(
+    file.workingBuffer,
+    entry,
+    context,
+    minCount,
+    currentValue,
+  );
+  if (!expanded) {
+    return false;
+  }
+
+  file.workingBuffer = expanded;
+  softwareField.count = minCount;
+  softwareField.valueOffset = context.segmentEnd;
+  file.jpegStructure = scanJpegStructure(file.workingBuffer);
+  return true;
 }
 
 // ---------- EXIF parsing (custom, minimal, only to find & edit ASCII date/time tags) ----------

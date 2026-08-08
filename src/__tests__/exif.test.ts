@@ -1,11 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { AUTHENTIC_SOFTWARE, MIN_SOFTWARE_FIELD_COUNT } from '../software';
 
 let parseExifDates: any;
 let applyFormToWorkingBuffer: any;
 let parseDeviceMetadata: any;
 let applyDevicePresetToBuffer: any;
 let getMatchingDevicePreset: any;
+let expandSoftwareFieldCapacity: any;
 
 beforeAll(async () => {
   // Set up mock DOM elements required for main.ts import side-effects
@@ -26,6 +28,7 @@ beforeAll(async () => {
   parseDeviceMetadata = main.parseDeviceMetadata;
   applyDevicePresetToBuffer = main.applyDevicePresetToBuffer;
   getMatchingDevicePreset = main.getMatchingDevicePreset;
+  expandSoftwareFieldCapacity = main.expandSoftwareFieldCapacity;
 });
 
 describe('EXIF parser and applyFormToWorkingBuffer tests', () => {
@@ -266,20 +269,47 @@ describe('EXIF parser and applyFormToWorkingBuffer tests', () => {
       expect(updatedSoftware.value).toBe('');
     });
 
-    it('should truncate the Software tag if it exceeds count - 1 capacity', () => {
-      // Software field has count = 13 (so max characters is 12)
-      // "A very long software name" is 26 characters
-      softwareInput.value = 'A very long software name';
+    it('should expand short Software fields so longer values can be stored', () => {
+      const workingBuffer = getSampleBuffer('IMG_short_software.jpg').slice(0);
+      const parsedFields = parseExifDates(workingBuffer);
+      const softwareIdx = parsedFields.findIndex((f: any) => f.name === 'Software');
+      expect(softwareIdx).not.toBe(-1);
+      expect(parsedFields[softwareIdx].count).toBe(5);
+
+      const mockFile: any = { workingBuffer, parsedFields };
+      expect(expandSoftwareFieldCapacity(mockFile)).toBe(true);
+      expect(parsedFields[softwareIdx].count).toBe(MIN_SOFTWARE_FIELD_COUNT);
+
+      const form = document.createElement('form');
+      const softwareInput = document.createElement('input');
+      softwareInput.setAttribute('data-field-input', 'true');
+      softwareInput.setAttribute('data-idx', String(softwareIdx));
+      softwareInput.value = AUTHENTIC_SOFTWARE.samsung;
+      form.appendChild(softwareInput);
+      mockFile.elements = { form };
 
       applyFormToWorkingBuffer(mockFile);
 
-      expect(mockFile.parsedFields[softwareIdx].value).toBe('A very long ');
+      expect(parsedFields[softwareIdx].value).toBe(AUTHENTIC_SOFTWARE.samsung);
+      const updatedFields = parseExifDates(mockFile.workingBuffer);
+      const updatedSoftware = updatedFields.find((f: any) => f.name === 'Software');
+      expect(updatedSoftware.value).toBe(AUTHENTIC_SOFTWARE.samsung);
+    });
+
+    it('should expand the Software field to fit values longer than the original tag', () => {
+      const value = 'A very long software name';
+      softwareInput.value = value;
+
+      applyFormToWorkingBuffer(mockFile);
+
+      expect(mockFile.parsedFields[softwareIdx].value).toBe(value);
+      expect(mockFile.parsedFields[softwareIdx].count).toBeGreaterThanOrEqual(
+        value.length + 1,
+      );
 
       const updatedFields = parseExifDates(mockFile.workingBuffer);
       const updatedSoftware = updatedFields.find((f: any) => f.name === 'Software');
-      // "A very long " is exactly 12 characters.
-      expect(updatedSoftware.value).toBe('A very long ');
-      expect(updatedSoftware.value.length).toBe(12);
+      expect(updatedSoftware.value).toBe(value);
     });
 
     it('should preserve renderable GPS and Software field values after applying the form', () => {

@@ -3,6 +3,7 @@ import {
   fetchLatestIosBetaVersion,
   fitSoftwareToField,
   IOS_BETA_FALLBACK,
+  MIN_SOFTWARE_FIELD_COUNT,
   parseLatestIosBetaVersion,
   PROGRAM_NAME_PRESETS,
 } from "../software";
@@ -55,6 +56,14 @@ describe("program name presets", () => {
       PROGRAM_NAME_PRESETS.find((preset) => preset.label === "Google Pixel")
         ?.value,
     ).toBe(AUTHENTIC_SOFTWARE.google);
+  });
+
+  it("reserves enough EXIF capacity for the longest preset", () => {
+    const longestPreset = PROGRAM_NAME_PRESETS.reduce(
+      (max, preset) => Math.max(max, preset.value.length),
+      0,
+    );
+    expect(MIN_SOFTWARE_FIELD_COUNT).toBeGreaterThan(longestPreset);
   });
 });
 

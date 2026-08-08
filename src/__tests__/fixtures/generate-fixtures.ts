@@ -444,6 +444,30 @@ function generateIMG2619(): Uint8Array {
   );
 }
 
+// --- Fixture: IMG_short_software.jpg ---
+
+function generateShortSoftware(): Uint8Array {
+  const ifd0Entries: IFDEntry[] = [
+    shortEntry(0x0112, 1),
+    asciiEntry(0x0131, "27.0"),
+    asciiEntry(0x0132, "2026:03:20 04:47:46"),
+  ];
+
+  const exifSegment = buildExifSegment({ ifd0Entries });
+  const { sof0, dqt, dht } = buildSOF0AndDHT();
+  const scanData = buildMinimalScanData();
+
+  return concatArrays(
+    new Uint8Array([0xff, 0xd8]),
+    exifSegment,
+    dqt,
+    sof0,
+    dht,
+    scanData,
+    new Uint8Array([0xff, 0xd9]),
+  );
+}
+
 // --- Fixture: IMG_0239.jpg ---
 
 function generateIMG0239(): Uint8Array {
@@ -466,6 +490,7 @@ const fixtures = [
   { name: "IMG_2865.JPG", generate: generateIMG2865 },
   { name: "IMG_2619.JPG", generate: generateIMG2619 },
   { name: "IMG_0239.jpg", generate: generateIMG0239 },
+  { name: "IMG_short_software.jpg", generate: generateShortSoftware },
 ];
 
 for (const fixture of fixtures) {
