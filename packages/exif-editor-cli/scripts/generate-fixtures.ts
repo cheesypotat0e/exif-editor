@@ -8,7 +8,15 @@ const fixtureDirectory = fileURLToPath(
   new URL("../test/fixtures/", import.meta.url),
 );
 
-const fixtures = [
+interface Fixture {
+  name: string;
+  width: number;
+  height: number;
+  color: string;
+  tags: Record<string, string | number>;
+}
+
+const fixtures: Fixture[] = [
   {
     name: "standard-with-gps.jpg",
     width: 96,
@@ -229,7 +237,7 @@ const fixtures = [
       "XMP:HistorySoftwareAgent": "Adobe Photoshop 27.8 (Windows)",
     },
   },
-  ...Array.from({ length: 8 }, (_, index) => ({
+  ...Array.from({ length: 8 }, (_, index): Fixture => ({
     name: `orientation-${index + 1}.jpg`,
     width: 48,
     height: 32,

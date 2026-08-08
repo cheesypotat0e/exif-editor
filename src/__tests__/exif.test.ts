@@ -30,7 +30,7 @@ beforeAll(async () => {
 
 describe('EXIF parser and applyFormToWorkingBuffer tests', () => {
   const getSampleBuffer = (filename: string): ArrayBuffer => {
-    const filePath = path.join(__dirname, '../../', filename);
+    const filePath = path.join(__dirname, 'fixtures', filename);
     const buffer = fs.readFileSync(filePath);
     return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
   };

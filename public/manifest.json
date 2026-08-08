@@ -1,0 +1,17 @@
+{
+  "name": "EXIF Date Editor",
+  "short_name": "EXIF Editor",
+  "description": "Edit EXIF date fields in JPEGs directly in your browser — no uploads, fully offline-capable.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f7f7fb",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "1053x1053",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { cp } from "node:fs/promises";
 import { build } from "vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
 
@@ -17,5 +18,14 @@ for (const [index, input] of entries.entries()) {
         input: resolve(rootDir, input),
       },
     },
+  });
+}
+
+// viteSingleFile may skip copying public assets that aren't inlined —
+// ensure the PWA shell files (manifest, service worker, icon) are present.
+const pwaFiles = ["manifest.json", "sw.js", "icon.png"];
+for (const file of pwaFiles) {
+  await cp(resolve(rootDir, "public", file), resolve(rootDir, "dist", file), {
+    force: true,
   });
 }

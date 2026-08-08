@@ -33,5 +33,5 @@ export function cliFixture(name: string) {
 }
 
 export function repoFixture(name: string) {
-  return path.join(__dirname, "../../../", name);
+  return path.join(__dirname, "../fixtures", name);
 }

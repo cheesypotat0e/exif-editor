@@ -6,7 +6,7 @@
   "files": [
     "dist",
     "README.md",
-    "scripts/generate-fixtures.mjs",
+    "scripts/generate-fixtures.ts",
     "test/fixtures"
   ],
   "bin": {
@@ -14,7 +14,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "fixtures": "node scripts/generate-fixtures.mjs",
+    "fixtures": "node scripts/generate-fixtures.ts",
     "prepack": "pnpm run build",
     "test": "pnpm run build && node --test --test-isolation=none dist/**/*.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"

@@ -9,6 +9,7 @@
     "build:cli": "pnpm --filter exif-editor-cli build",
     "cli": "node packages/exif-editor-cli/dist/cli.js",
     "preview": "vite preview",
+    "pretest": "node src/__tests__/fixtures/generate-fixtures.ts",
     "test": "jest",
     "test:cli": "pnpm --filter exif-editor-cli test"
   },

@@ -477,6 +477,10 @@ window.addEventListener("offline", () => {
     "No internet connection detected. GPS maps are disabled.";
 });
 
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch(() => {});
+}
+
 function getFileExtension(name: string) {
   const match = name.match(/(\.[^.]+)$/);
   return match ? match[1] : ".jpg";
@@ -566,7 +570,7 @@ function updateGpsMapAvailability(file: LoadedFile) {
 
   if (offline) {
     elements.gpsMapOverlayText.textContent =
-      "Map is unavailable while offline. Reconnect, then refresh the map.";
+      "OpenStreetMap tiles are only available online. Reconnect to the internet, then refresh the map.";
     elements.gpsSearchStatus.textContent = elements.gpsSearchStatus.textContent
       ? elements.gpsSearchStatus.textContent
       : "Address lookup requires an internet connection.";
@@ -5070,7 +5074,7 @@ function appendFileEditor(file: LoadedFile, placeholder?: HTMLElement) {
         }
       } else if (!reachable) {
         gpsMapOverlayText.textContent =
-          "Map is unavailable while offline. Reconnect, then refresh the map.";
+          "OpenStreetMap tiles are only available online. Reconnect to the internet, then refresh the map.";
       }
       gpsMapRefreshButton.disabled = false;
     });

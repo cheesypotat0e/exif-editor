@@ -23,7 +23,7 @@ beforeAll(async () => {
 });
 
 function getSampleBuffer(filename: string) {
-  const filePath = path.join(__dirname, "../../", filename);
+  const filePath = path.join(__dirname, "fixtures", filename);
   const buffer = fs.readFileSync(filePath);
   return buffer.buffer.slice(
     buffer.byteOffset,
