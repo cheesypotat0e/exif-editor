@@ -100,6 +100,7 @@ type DateTimePickerState = {
   visibleSecondInput: HTMLInputElement;
   visibleMeridiemInput: HTMLInputElement;
   epochInput: HTMLInputElement;
+  segmentGroup: HTMLDivElement;
   copyEpochButton: HTMLButtonElement;
   toggleButton: HTMLButtonElement;
   popup: HTMLDivElement;
@@ -3209,6 +3210,25 @@ function adjustVisibleSegmentValue(
   renderDateTimePicker(state);
 }
 
+/**
+ * The segment strip scrolls horizontally when the stamp is wider than the
+ * field, but its scrollbar is hidden. Mark which edges still have content
+ * behind them so the stylesheet can fade them and show there is more to see.
+ */
+function updateSegmentScrollAffordance(state: DateTimePickerState) {
+  const group = state.segmentGroup;
+  const hidden = group.scrollWidth - group.clientWidth;
+
+  if (hidden <= 1) {
+    delete group.dataset.overflow;
+    return;
+  }
+
+  const atStart = group.scrollLeft <= 1;
+  const atEnd = group.scrollLeft >= hidden - 1;
+  group.dataset.overflow = atStart ? "end" : atEnd ? "start" : "both";
+}
+
 function syncDateTimePickerValue(state: DateTimePickerState) {
   state.hiddenInput.value = formatPickerDateTimeValue(state.selectedDate);
   state.hiddenInput.dispatchEvent(new Event("input", { bubbles: true }));
@@ -3250,6 +3270,7 @@ function syncDateTimePickerValue(state: DateTimePickerState) {
     .toString()
     .padStart(2, "0");
   state.meridiemSelect.value = hours24 >= 12 ? "PM" : "AM";
+  updateSegmentScrollAffordance(state);
 }
 
 function focusSelectedDay(state: DateTimePickerState) {
@@ -3678,6 +3699,7 @@ function createDateTimePicker(
     visibleSecondInput,
     visibleMeridiemInput,
     epochInput,
+    segmentGroup,
     copyEpochButton,
     toggleButton,
     popup,
@@ -4002,6 +4024,17 @@ function createDateTimePicker(
   root.appendChild(controlsContainer);
   root.appendChild(clipboardError);
   root.appendChild(popup);
+
+  segmentGroup.addEventListener("scroll", () =>
+    updateSegmentScrollAffordance(state),
+  );
+
+  // Absent in jsdom, so the tests exercise the rest of the picker unaffected.
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => updateSegmentScrollAffordance(state)).observe(
+      segmentGroup,
+    );
+  }
 
   renderDateTimePicker(state);
   return root;

@@ -616,7 +616,9 @@ input.preview-name-input {
 .datetime-picker-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 38px 38px;
-  grid-template-areas: "field copy paste";
+  grid-template-areas:
+    "field field field"
+    ".     copy  paste";
   gap: 8px;
   align-items: stretch;
 }
@@ -628,6 +630,10 @@ input.preview-name-input {
 }
 .datetime-picker-paste {
   grid-area: paste;
+}
+.datetime-picker-copy-epoch,
+.datetime-picker-paste {
+  height: 38px;
 }
 .datetime-picker > .clipboard-validation-error {
   margin-top: 6px;
@@ -657,6 +663,23 @@ input.preview-name-input {
 }
 .datetime-picker-segments::-webkit-scrollbar {
   display: none;
+}
+/* Fade whichever edge still has stamp behind it, so a field too narrow for the
+   whole date reads as scrollable rather than simply cut off. */
+.datetime-picker-segments[data-overflow="end"] {
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+}
+.datetime-picker-segments[data-overflow="start"] {
+  mask-image: linear-gradient(to right, transparent, #000 20px);
+}
+.datetime-picker-segments[data-overflow="both"] {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 20px,
+    #000 calc(100% - 20px),
+    transparent
+  );
 }
 .datetime-picker input.datetime-picker-segment {
   border: 0;
@@ -725,12 +748,9 @@ input.preview-name-input {
   padding-right: 6px;
 }
 
-@container (max-width: 370px) {
+@container (max-width: 310px) {
   .datetime-picker-controls {
     grid-template-columns: minmax(0, 1fr) 34px 34px;
-    grid-template-areas:
-      "field field field"
-      ".     copy  paste";
     gap: 8px 6px;
   }
 
