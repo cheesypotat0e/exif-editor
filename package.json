@@ -29,6 +29,7 @@
     "vite-plugin-singlefile": "^2.3.3"
   },
   "dependencies": {
-    "leaflet": "^1.9.4"
+    "leaflet": "^1.9.4",
+    "lucide": "^1.35.0"
   }
 }

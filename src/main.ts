@@ -10,6 +10,15 @@ import {
   MIN_SOFTWARE_FIELD_COUNT,
   PROGRAM_NAME_PRESETS,
 } from "./software";
+import {
+  CALENDAR_ICON_SVG,
+  CHECK_ICON_SVG,
+  COPY_ICON_SVG,
+  EDIT_ICON_SVG,
+  MOVE_DOWN_ICON_SVG,
+  MOVE_UP_ICON_SVG,
+  PASTE_ICON_SVG,
+} from "./icons";
 
 type IDF = {
   type: number;
@@ -1976,14 +1985,50 @@ function moveLoadedFile(fileId: string, direction: -1 | 1) {
     return;
   }
 
+  const container = loadedFiles[fromIndex].elements?.container ?? null;
+  // Cards vary wildly in height, so a plain reorder throws the card the user
+  // acted on far up or down the page. Pin it where it already sits on screen
+  // and restore focus, which the DOM move would otherwise drop onto <body>.
+  const anchorTop = container?.getBoundingClientRect().top ?? null;
+  const focused = document.activeElement;
+
   const [file] = loadedFiles.splice(fromIndex, 1);
   loadedFiles.splice(toIndex, 0, file);
-  loadedFiles.forEach((item) => {
-    if (item.elements) {
-      fileListEl.appendChild(item.elements.container);
-    }
-  });
+
+  if (container) {
+    // Move only this card. Re-appending every card churns the whole list and
+    // makes the browser discard the scroll position outright.
+    const nextRendered =
+      loadedFiles.slice(toIndex + 1).find((item) => item.elements)?.elements
+        ?.container ?? null;
+    fileListEl.insertBefore(container, nextRendered);
+  }
+
   refreshLoadedFileControls();
+
+  if (container && anchorTop !== null) {
+    const drift = container.getBoundingClientRect().top - anchorTop;
+    if (drift !== 0) {
+      window.scrollBy(0, drift);
+    }
+  }
+
+  if (focused instanceof HTMLElement && focused.isConnected) {
+    const elements = file.elements;
+    const fallback =
+      elements &&
+      (focused === elements.moveUpButton
+        ? elements.moveDownButton
+        : focused === elements.moveDownButton
+          ? elements.moveUpButton
+          : null);
+    // The button that ran out of travel is now disabled; hand focus to its pair
+    // so the rail stays keyboard-navigable.
+    (focused.matches(":disabled") && fallback ? fallback : focused).focus({
+      preventScroll: true,
+    });
+  }
+
   status.textContent = "Updated file order.";
 }
 
@@ -2766,15 +2811,6 @@ function getEpochTimestampValue(
   return Math.floor(utcMillis / 1000).toString();
 }
 
-const COPY_ICON_SVG =
-  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1a3 3 0 0 1 3 3v9h-2V4a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v1H4V4a3 3 0 0 1 3-3h9Zm-11 6h9a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V10a3 3 0 0 1 3-3Zm0 2a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V10a1 1 0 0 0-1-1H5Z"/></svg>';
-
-const PASTE_ICON_SVG =
-  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 2a2 2 0 0 1 2 2h1a3 3 0 0 1 3 3v13a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h1a2 2 0 0 1 2-2h6Zm2 4H7v14a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-1ZM9 4v2h6V4H9Zm2 4h2v5.17l1.59-1.58L16 13l-4 4-4-4 1.41-1.41L11 13.17V8Z"/></svg>';
-
-const CHECK_ICON_SVG =
-  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.55 18.2 4.3 12.95l1.4-1.4 3.85 3.85 8.75-8.75 1.4 1.4-10.15 10.15Z"/></svg>';
-
 async function copyTextToClipboard(value: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(value);
@@ -2799,6 +2835,119 @@ async function readTextFromClipboard() {
   }
 
   return navigator.clipboard.readText();
+}
+
+/**
+ * Inverse of `getEpochTimestampValue`: turn epoch seconds back into the
+ * wall-clock date the picker displays. Without a recorded EXIF offset the
+ * epoch is read as local time, matching how the copy button produced it.
+ */
+function getDateFromEpochSeconds(
+  epochSeconds: number,
+  offsetMinutes: number | null,
+) {
+  if (offsetMinutes === null) {
+    const local = new Date(epochSeconds * 1000);
+    return Number.isNaN(local.getTime()) ? null : local;
+  }
+
+  const shifted = new Date(epochSeconds * 1000 + offsetMinutes * 60 * 1000);
+  if (Number.isNaN(shifted.getTime())) {
+    return null;
+  }
+
+  return new Date(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth(),
+    shifted.getUTCDate(),
+    shifted.getUTCHours(),
+    shifted.getUTCMinutes(),
+    shifted.getUTCSeconds(),
+  );
+}
+
+/** `2024-01-15T10:30:00`, `2024:01:15 10:30:00`, `2024/01/15 10:30 PM`, … */
+const ISO_CLIPBOARD_DATE_TIME =
+  /^(\d{4})[-:/.](\d{1,2})[-:/.](\d{1,2})(?:[T,]?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?\s*(AM|PM)?\s*(Z|[+-]\d{2}:?\d{2})?)?$/i;
+
+/** `01/15/2024, 10:30:00 PM` — the order the picker itself renders. */
+const US_CLIPBOARD_DATE_TIME =
+  /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:,?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i;
+
+function applyMeridiem(hour: number, meridiem?: string) {
+  if (!meridiem) {
+    return hour;
+  }
+
+  const base = hour % 12;
+  return meridiem.toUpperCase() === "PM" ? base + 12 : base;
+}
+
+/**
+ * Accept an epoch timestamp or a common date-time spelling and return the
+ * wall-clock date the picker should show. Values carrying an explicit UTC
+ * designator or numeric offset are converted into the field's own offset;
+ * everything else is taken at face value.
+ */
+export function parseClipboardDateTime(
+  value: string,
+  timezoneOffset?: string,
+): Date | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const offsetMinutes = parseExifOffsetMinutes(timezoneOffset);
+
+  if (/^[+-]?\d{1,13}$/.test(trimmed)) {
+    return getDateFromEpochSeconds(Number(trimmed), offsetMinutes);
+  }
+
+  const isoMatch = trimmed.match(ISO_CLIPBOARD_DATE_TIME);
+  const usMatch = isoMatch ? null : trimmed.match(US_CLIPBOARD_DATE_TIME);
+  if (!isoMatch && !usMatch) {
+    return null;
+  }
+
+  const [year, month, day] = isoMatch
+    ? [Number(isoMatch[1]), Number(isoMatch[2]), Number(isoMatch[3])]
+    : [Number(usMatch![3]), Number(usMatch![1]), Number(usMatch![2])];
+  const parts = isoMatch ? isoMatch.slice(4) : usMatch!.slice(4);
+  const [rawHour, rawMinute, rawSecond, meridiem] = parts;
+  const sourceOffset = isoMatch ? parts[4] : undefined;
+
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) {
+    return null;
+  }
+
+  const hour = applyMeridiem(Number(rawHour ?? 0), meridiem);
+  const minute = Number(rawMinute ?? 0);
+  const second = Number(rawSecond ?? 0);
+  if (hour > 23 || minute > 59 || second > 59) {
+    return null;
+  }
+
+  if (sourceOffset) {
+    const sourceOffsetMinutes =
+      sourceOffset.toUpperCase() === "Z"
+        ? 0
+        : parseExifOffsetMinutes(
+            `${sourceOffset.slice(0, 3)}:${sourceOffset.slice(-2)}`,
+          );
+    if (sourceOffsetMinutes === null) {
+      return null;
+    }
+
+    const utcSeconds =
+      (Date.UTC(year, month - 1, day, hour, minute, second) -
+        sourceOffsetMinutes * 60 * 1000) /
+      1000;
+    return getDateFromEpochSeconds(utcSeconds, offsetMinutes);
+  }
+
+  const date = new Date(year, month - 1, day, hour, minute, second);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 type GpsCoordinates = { latitude: number; longitude: number };
@@ -3291,6 +3440,7 @@ function createDateTimePicker(
   const initialDate = parseInputDateTimeValue(initialValue) ?? new Date();
   const root = document.createElement("div");
   const hiddenInput = document.createElement("input");
+  const controlsContainer = document.createElement("div");
   const controls = document.createElement("div");
   const field = document.createElement("div");
   const segmentGroup = document.createElement("div");
@@ -3303,6 +3453,8 @@ function createDateTimePicker(
   const visibleMeridiemInput = document.createElement("input");
   const epochInput = document.createElement("input");
   const copyEpochButton = document.createElement("button");
+  const pasteButton = document.createElement("button");
+  const clipboardError = document.createElement("div");
   const toggleButton = document.createElement("button");
   const popup = document.createElement("div");
   const header = document.createElement("div");
@@ -3322,6 +3474,11 @@ function createDateTimePicker(
   const popupId = `field-${idx}-picker`;
 
   root.className = "datetime-picker";
+  // A query container so the controls respond to the width they actually get,
+  // which depends on the preview column and label column, not the viewport.
+  // It wraps only the controls: the popup is `position: fixed` and must keep
+  // resolving against the viewport rather than a contained ancestor.
+  controlsContainer.className = "datetime-picker-controls-container";
   controls.className = "datetime-picker-controls";
   field.className = "datetime-picker-field";
   segmentGroup.className = "datetime-picker-segments";
@@ -3376,8 +3533,7 @@ function createDateTimePicker(
   toggleButton.setAttribute("aria-haspopup", "dialog");
   toggleButton.setAttribute("aria-expanded", "false");
   toggleButton.setAttribute("aria-controls", popupId);
-  toggleButton.innerHTML =
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a2 2 0 0 1 2 2v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a2 2 0 0 1 2-2h1V3a1 1 0 0 1 1-1Zm12 8H5v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8ZM6 6a1 1 0 0 0-1 1v1h14V7a1 1 0 0 0-1-1H6Zm2 6h3v3H8v-3Z"/></svg>';
+  toggleButton.innerHTML = CALENDAR_ICON_SVG;
 
   visibleMeridiemInput.type = "text";
   visibleMeridiemInput.className = "datetime-picker-visible-meridiem";
@@ -3394,10 +3550,22 @@ function createDateTimePicker(
   epochInput.type = "hidden";
 
   copyEpochButton.type = "button";
-  copyEpochButton.className = "datetime-picker-copy datetime-picker-action";
+  copyEpochButton.className =
+    "datetime-picker-copy datetime-picker-action datetime-picker-copy-epoch";
   copyEpochButton.setAttribute("aria-label", "Copy epoch timestamp");
   copyEpochButton.title = "Copy epoch timestamp";
   copyEpochButton.innerHTML = COPY_ICON_SVG;
+
+  pasteButton.type = "button";
+  pasteButton.className =
+    "datetime-picker-copy datetime-picker-action datetime-picker-paste";
+  pasteButton.setAttribute("aria-label", "Paste date and time");
+  pasteButton.title = "Paste date and time";
+  pasteButton.innerHTML = PASTE_ICON_SVG;
+
+  clipboardError.className = "clipboard-validation-error";
+  clipboardError.setAttribute("role", "alert");
+  clipboardError.hidden = true;
 
   popup.id = popupId;
   popup.hidden = true;
@@ -3733,6 +3901,67 @@ function createDateTimePicker(
     }
   });
 
+  /**
+   * Success and failure share one timer so a quick second paste cannot leave
+   * the button wearing the previous attempt's icon or colour.
+   */
+  let pasteFeedbackTimeout: number | undefined;
+
+  const resetPasteFeedback = () => {
+    if (pasteFeedbackTimeout !== undefined) {
+      window.clearTimeout(pasteFeedbackTimeout);
+      pasteFeedbackTimeout = undefined;
+    }
+    pasteButton.dataset.state = "";
+    pasteButton.innerHTML = PASTE_ICON_SVG;
+    clipboardError.hidden = true;
+    clipboardError.textContent = "";
+  };
+
+  const flashPasteFeedback = (state: "success" | "error", message = "") => {
+    resetPasteFeedback();
+    pasteButton.dataset.state = state;
+
+    if (state === "success") {
+      pasteButton.innerHTML = CHECK_ICON_SVG;
+    } else {
+      clipboardError.textContent = message;
+      clipboardError.hidden = false;
+    }
+
+    pasteFeedbackTimeout = window.setTimeout(
+      resetPasteFeedback,
+      state === "success" ? 1200 : 3000,
+    );
+  };
+
+  pasteButton.addEventListener("click", async () => {
+    let clipboardText: string;
+    try {
+      clipboardText = await readTextFromClipboard();
+    } catch (error) {
+      console.error("Failed to read date and time from the clipboard", error);
+      flashPasteFeedback("error", "Could not read the clipboard.");
+      return;
+    }
+
+    const pasted = parseClipboardDateTime(clipboardText, state.timezoneOffset);
+    if (!pasted) {
+      flashPasteFeedback(
+        "error",
+        "Paste a date and time or an epoch timestamp.",
+      );
+      return;
+    }
+
+    state.selectedDate = pasted;
+    state.viewYear = pasted.getFullYear();
+    state.viewMonth = pasted.getMonth();
+    renderDateTimePicker(state);
+
+    flashPasteFeedback("success");
+  });
+
   root.appendChild(hiddenInput);
   const slash1 = document.createElement("span");
   slash1.className = "datetime-picker-separator";
@@ -3768,7 +3997,10 @@ function createDateTimePicker(
   controls.appendChild(epochInput);
   controls.appendChild(field);
   controls.appendChild(copyEpochButton);
-  root.appendChild(controls);
+  controls.appendChild(pasteButton);
+  controlsContainer.appendChild(controls);
+  root.appendChild(controlsContainer);
+  root.appendChild(clipboardError);
   root.appendChild(popup);
 
   renderDateTimePicker(state);
@@ -4690,8 +4922,7 @@ function appendFileEditor(file: LoadedFile, placeholder?: HTMLElement) {
   editFilenameButton.type = "button";
   editFilenameButton.className = "icon-button";
   editFilenameButton.setAttribute("aria-label", "Edit filename");
-  editFilenameButton.innerHTML =
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25Zm14.71-9.04a1.003 1.003 0 0 0 0-1.42l-2.5-2.5a1.003 1.003 0 0 0-1.42 0l-1.96 1.96 3.75 3.75 2.13-1.79Z"/></svg>';
+  editFilenameButton.innerHTML = EDIT_ICON_SVG;
   filenameInput.className = "preview-name-input";
   filenameInput.type = "text";
   filenameInput.value = file.filename;
@@ -4702,13 +4933,11 @@ function appendFileEditor(file: LoadedFile, placeholder?: HTMLElement) {
   moveUpButton.type = "button";
   moveUpButton.className = "icon-button";
   moveUpButton.setAttribute("aria-label", "Move file up");
-  moveUpButton.innerHTML =
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5 5 12h4v7h6v-7h4l-7-7Z"/></svg>';
+  moveUpButton.innerHTML = MOVE_UP_ICON_SVG;
   moveDownButton.type = "button";
   moveDownButton.className = "icon-button";
   moveDownButton.setAttribute("aria-label", "Move file down");
-  moveDownButton.innerHTML =
-    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19 19 12h-4V5H9v7H5l7 7Z"/></svg>';
+  moveDownButton.innerHTML = MOVE_DOWN_ICON_SVG;
   editorPanel.className = "editor-panel";
   timestampPanel.className = "timestamp-panel";
   timestampSummary.className = "timestamp-summary";

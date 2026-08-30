@@ -212,7 +212,9 @@ img.preview {
 .icon-button svg {
   width: 16px;
   height: 16px;
-  fill: currentColor;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
 }
 .icon-button:hover:not(:disabled) {
   background: #f8fafc;
@@ -375,6 +377,7 @@ form#fields,
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
   color: #475569;
   font-size: 12px;
   font-weight: 700;
@@ -402,6 +405,7 @@ form#fields,
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
   color: #475569;
   font-size: 12px;
   font-weight: 700;
@@ -591,7 +595,7 @@ input[type="number"] {
   padding: 10px 12px;
   border-radius: 8px;
   border: 1px solid #d1d5db;
-  min-width: 200px;
+  min-width: min(200px, 100%);
   width: 100%;
   box-sizing: border-box;
   background: #fff;
@@ -606,11 +610,27 @@ input.preview-name-input {
   width: 100%;
   min-width: 0;
 }
+.datetime-picker-controls-container {
+  container-type: inline-size;
+}
 .datetime-picker-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
+  grid-template-columns: minmax(0, 1fr) 38px 38px;
+  grid-template-areas: "field copy paste";
   gap: 8px;
   align-items: stretch;
+}
+.datetime-picker-controls > .datetime-picker-field {
+  grid-area: field;
+}
+.datetime-picker-copy-epoch {
+  grid-area: copy;
+}
+.datetime-picker-paste {
+  grid-area: paste;
+}
+.datetime-picker > .clipboard-validation-error {
+  margin-top: 6px;
 }
 .datetime-picker-field {
   display: grid;
@@ -704,6 +724,65 @@ input.preview-name-input {
 .datetime-picker-separator.is-comma {
   padding-right: 6px;
 }
+
+@container (max-width: 370px) {
+  .datetime-picker-controls {
+    grid-template-columns: minmax(0, 1fr) 34px 34px;
+    grid-template-areas:
+      "field field field"
+      ".     copy  paste";
+    gap: 8px 6px;
+  }
+
+  .datetime-picker-copy {
+    width: 34px;
+  }
+
+  .datetime-picker-copy-epoch,
+  .datetime-picker-paste {
+    height: 34px;
+  }
+
+  .datetime-picker-segments {
+    padding: 0 4px;
+  }
+
+  .datetime-picker input.datetime-picker-segment.is-short {
+    min-width: 2.3ch;
+    width: 2.3ch;
+  }
+
+  .datetime-picker input.datetime-picker-segment.is-year {
+    min-width: 4.4ch;
+    width: 4.4ch;
+  }
+
+  .datetime-picker input.datetime-picker-visible-meridiem {
+    min-width: 2.8ch;
+    width: 2.8ch;
+    padding-left: 2px;
+  }
+
+  .datetime-picker-separator.is-comma {
+    padding-right: 4px;
+  }
+}
+
+/* Tightest tier: shrink the type and close up the separators so the whole
+   stamp still fits without scrolling on a 320px phone. */
+@container (max-width: 290px) {
+  .datetime-picker-segments {
+    font-size: 13px;
+  }
+
+  .datetime-picker-separator {
+    padding: 0;
+  }
+
+  .datetime-picker-separator.is-comma {
+    padding-right: 2px;
+  }
+}
 .datetime-picker-action {
   display: inline-flex;
   align-items: center;
@@ -720,7 +799,9 @@ input.preview-name-input {
 .datetime-picker-toggle svg {
   width: 16px;
   height: 16px;
-  fill: currentColor;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
 }
 .datetime-picker-copy {
   border: 1px solid #d1d5db;
@@ -737,7 +818,9 @@ input.preview-name-input {
 .datetime-picker-action svg {
   width: 16px;
   height: 16px;
-  fill: currentColor;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
 }
 .datetime-picker-copy[data-state="success"] {
   color: #15803d;
@@ -1138,41 +1221,10 @@ body.map-fullscreen-open {
     gap: 4px;
   }
 
-  .datetime-picker-controls {
-    grid-template-columns: minmax(0, 1fr) 34px;
-  }
-
   .datetime-picker-field {
     grid-template-columns: minmax(0, 1fr) 34px;
   }
 
-  .datetime-picker-segments {
-    padding: 0 4px;
-  }
-
-  .datetime-picker input.datetime-picker-segment.is-short {
-    min-width: 2.3ch;
-    width: 2.3ch;
-  }
-
-  .datetime-picker input.datetime-picker-segment.is-year {
-    min-width: 4.4ch;
-    width: 4.4ch;
-  }
-
-  .datetime-picker input.datetime-picker-visible-meridiem {
-    min-width: 2.8ch;
-    width: 2.8ch;
-    padding-left: 2px;
-  }
-
-  .datetime-picker-separator.is-comma {
-    padding-right: 4px;
-  }
-
-  .datetime-picker-copy {
-    width: 34px;
-  }
 
   .datetime-picker-time {
     display: flex;

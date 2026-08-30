@@ -186,4 +186,82 @@ describe('Program Name Input and Presets Dropdown DOM Tests', () => {
     fireEvent.input(altInput, { target: { value: '-45.6' } });
     expect(altInput.value).toBe('-45.6');
   });
+
+  it('should paste a date and time into a datetime field from the clipboard', async () => {
+    mockFile.parsedFields.push({
+      label: 'Date/Time Original',
+      name: 'DateTimeOriginal',
+      ifd: 'Exif',
+      tag: 36867,
+      count: 20,
+      value: '2026:05:30 08:00:00',
+      type: 'datetime'
+    });
+
+    renderFields(mockFile, form);
+
+    const pasteButton = screen.getByLabelText(
+      'Paste date and time'
+    ) as HTMLButtonElement;
+    const picker = pasteButton.closest('.datetime-picker') as HTMLElement;
+    const hiddenInput = picker.querySelector(
+      'input[data-field-input]'
+    ) as HTMLInputElement;
+    expect(hiddenInput.value).toBe('2026-05-30T08:00:00');
+
+    const readText = jest.fn().mockResolvedValue('2026-06-01 12:34:56');
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { readText },
+      configurable: true
+    });
+
+    fireEvent.click(pasteButton);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(readText).toHaveBeenCalled();
+    expect(hiddenInput.value).toBe('2026-06-01T12:34:56');
+    const segments = Array.from(
+      picker.querySelectorAll('.datetime-picker-segments input')
+    ).map((segment) => (segment as HTMLInputElement).value);
+    expect(segments).toEqual(['06', '01', '2026', '12', '34', '56', 'PM']);
+  });
+
+  it('should surface an error when the clipboard holds no usable date', async () => {
+    mockFile.parsedFields.push({
+      label: 'Date/Time Original',
+      name: 'DateTimeOriginal',
+      ifd: 'Exif',
+      tag: 36867,
+      count: 20,
+      value: '2026:05:30 08:00:00',
+      type: 'datetime'
+    });
+
+    renderFields(mockFile, form);
+
+    const pasteButton = screen.getByLabelText(
+      'Paste date and time'
+    ) as HTMLButtonElement;
+    const picker = pasteButton.closest('.datetime-picker') as HTMLElement;
+    const hiddenInput = picker.querySelector(
+      'input[data-field-input]'
+    ) as HTMLInputElement;
+
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { readText: jest.fn().mockResolvedValue('not a date') },
+      configurable: true
+    });
+
+    fireEvent.click(pasteButton);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const error = picker.querySelector(
+      '.clipboard-validation-error'
+    ) as HTMLElement;
+    expect(error.hidden).toBe(false);
+    expect(error.textContent).toBe(
+      'Paste a date and time or an epoch timestamp.'
+    );
+    expect(hiddenInput.value).toBe('2026-05-30T08:00:00');
+  });
 });
