@@ -616,9 +616,7 @@ input.preview-name-input {
 .datetime-picker-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 38px 38px;
-  grid-template-areas:
-    "field field field"
-    ".     copy  paste";
+  grid-template-areas: "field copy paste";
   gap: 8px;
   align-items: stretch;
 }
@@ -630,10 +628,6 @@ input.preview-name-input {
 }
 .datetime-picker-paste {
   grid-area: paste;
-}
-.datetime-picker-copy-epoch,
-.datetime-picker-paste {
-  height: 38px;
 }
 .datetime-picker > .clipboard-validation-error {
   margin-top: 6px;
@@ -748,19 +742,14 @@ input.preview-name-input {
   padding-right: 6px;
 }
 
-@container (max-width: 310px) {
+@container (max-width: 360px) {
   .datetime-picker-controls {
     grid-template-columns: minmax(0, 1fr) 34px 34px;
-    gap: 8px 6px;
+    gap: 6px;
   }
 
   .datetime-picker-copy {
     width: 34px;
-  }
-
-  .datetime-picker-copy-epoch,
-  .datetime-picker-paste {
-    height: 34px;
   }
 
   .datetime-picker-segments {
@@ -788,21 +777,6 @@ input.preview-name-input {
   }
 }
 
-/* Tightest tier: shrink the type and close up the separators so the whole
-   stamp still fits without scrolling on a 320px phone. */
-@container (max-width: 290px) {
-  .datetime-picker-segments {
-    font-size: 13px;
-  }
-
-  .datetime-picker-separator {
-    padding: 0;
-  }
-
-  .datetime-picker-separator.is-comma {
-    padding-right: 2px;
-  }
-}
 .datetime-picker-action {
   display: inline-flex;
   align-items: center;
