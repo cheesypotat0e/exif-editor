@@ -104,6 +104,52 @@ describe('Program Name Input and Presets Dropdown DOM Tests', () => {
     expect(select.selectedIndex).toBe(0);
   });
 
+  it('should trigger version fetch and update value when selecting Apple iOS', async () => {
+    renderFields(mockFile, form);
+
+    const input = screen.getByLabelText('Program name') as HTMLInputElement;
+    const select = screen.getByRole('combobox', { name: 'Program name presets' }) as HTMLSelectElement;
+
+    const opt = Array.from(select.options).find((o) => o.textContent === 'Apple iOS')!;
+    select.selectedIndex = opt.index;
+    fireEvent.change(select);
+
+    expect(input.value).toBe('27.0');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(input.value).toBeDefined();
+  });
+
+  it('should trigger version fetch and update value when selecting Samsung Galaxy', async () => {
+    renderFields(mockFile, form);
+
+    const input = screen.getByLabelText('Program name') as HTMLInputElement;
+    const select = screen.getByRole('combobox', { name: 'Program name presets' }) as HTMLSelectElement;
+
+    const opt = Array.from(select.options).find((o) => o.textContent === 'Samsung Galaxy')!;
+    select.selectedIndex = opt.index;
+    fireEvent.change(select);
+
+    // Initial sync value fits within maxLength (12)
+    expect(input.value).toBe('S928BXXS7AXK');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(input.value).toBeDefined();
+  });
+
+  it('should trigger version fetch and update value when selecting Google Pixel', async () => {
+    renderFields(mockFile, form);
+
+    const input = screen.getByLabelText('Program name') as HTMLInputElement;
+    const select = screen.getByRole('combobox', { name: 'Program name presets' }) as HTMLSelectElement;
+
+    const opt = Array.from(select.options).find((o) => o.textContent === 'Google Pixel')!;
+    select.selectedIndex = opt.index;
+    fireEvent.change(select);
+
+    expect(input.value).toBe('HDR+ 1.0.585');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(input.value).toBeDefined();
+  });
+
   it('should handle manual input changes on the Program name input field', () => {
     renderFields(mockFile, form);
 

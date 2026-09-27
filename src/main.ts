@@ -5,10 +5,14 @@ import markerIcon2xUrl from "leaflet/dist/images/marker-icon-2x.png?inline";
 import markerShadowUrl from "leaflet/dist/images/marker-shadow.png?inline";
 import ImageWorker from "./imageWorker?worker&inline";
 import {
+  AUTHENTIC_SOFTWARE,
   fetchLatestIosBetaVersion,
+  fetchLatestPixelVersion,
+  fetchLatestSamsungVersion,
   fitSoftwareToField,
   MIN_SOFTWARE_FIELD_COUNT,
   PROGRAM_NAME_PRESETS,
+  type SoftwareResolution,
 } from "./software";
 import {
   CALENDAR_ICON_SVG,
@@ -4235,13 +4239,71 @@ export function renderFields(file: LoadedFile, form: HTMLFormElement) {
         select.appendChild(opt);
       });
 
-      select.addEventListener("change", () => {
-        input.value = select.value;
+      let lastSoftwareFetchId = 0;
+      select.addEventListener("change", async () => {
+        const selectedValue = select.value;
+        const selectedOption = select.options[select.selectedIndex];
+        const selectedLabel = selectedOption?.textContent ?? "";
+
+        input.value = selectedValue;
         if (input.value.length > input.maxLength) {
           input.value = input.value.substring(0, input.maxLength);
         }
+        f.value = input.value;
         input.dispatchEvent(new Event("input", { bubbles: true }));
         select.selectedIndex = 0;
+
+        const isApple =
+          selectedLabel === "Apple iOS" ||
+          selectedValue === AUTHENTIC_SOFTWARE.apple;
+        const isSamsung =
+          selectedLabel === "Samsung Galaxy" ||
+          selectedValue === AUTHENTIC_SOFTWARE.samsung;
+        const isGoogle =
+          selectedLabel === "Google Pixel" ||
+          selectedValue === AUTHENTIC_SOFTWARE.google;
+
+        if (isApple || isSamsung || isGoogle) {
+          const fetchId = ++lastSoftwareFetchId;
+          try {
+            let resolution: SoftwareResolution;
+            if (isApple) {
+              if (status) status.textContent = "Fetching latest iOS version...";
+              resolution = await fetchLatestIosBetaVersion();
+            } else if (isSamsung) {
+              if (status)
+                status.textContent = "Fetching latest Samsung Galaxy version...";
+              resolution = await fetchLatestSamsungVersion();
+            } else {
+              if (status)
+                status.textContent = "Fetching latest Google Pixel version...";
+              resolution = await fetchLatestPixelVersion();
+            }
+
+            if (fetchId !== lastSoftwareFetchId) {
+              return;
+            }
+
+            const neededCount = Math.max(
+              MIN_SOFTWARE_FIELD_COUNT,
+              resolution.value.length + 1,
+            );
+            if (f.count < neededCount) {
+              expandSoftwareFieldCapacity(file, neededCount);
+              input.maxLength = f.count - 1;
+            }
+
+            const sanitized = fitSoftwareToField(resolution.value, f.count);
+            input.value = sanitized;
+            f.value = sanitized;
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            if (status) {
+              status.textContent = `Updated Program name to ${sanitized}.`;
+            }
+          } catch (err) {
+            console.error("Failed to fetch latest software version:", err);
+          }
+        }
       });
 
       container.appendChild(input);
@@ -4668,10 +4730,36 @@ async function syncDateTimeFieldsToOriginal(file: LoadedFile) {
         softwareField.value === ""
       ) {
         expandSoftwareFieldCapacity(file);
-        status.textContent = "Fetching latest iOS version...";
-        const iosSoftware = (await fetchLatestIosBetaVersion()).value;
+        let deviceMake = "";
+        try {
+          deviceMake =
+            parseDeviceMetadata(file.workingBuffer).make?.toLowerCase() ?? "";
+        } catch {
+          // ignore
+        }
+
+        let resolution: SoftwareResolution;
+        if (deviceMake.includes("samsung")) {
+          status.textContent = "Fetching latest Samsung Galaxy version...";
+          resolution = await fetchLatestSamsungVersion();
+        } else if (deviceMake.includes("google")) {
+          status.textContent = "Fetching latest Google Pixel version...";
+          resolution = await fetchLatestPixelVersion();
+        } else {
+          status.textContent = "Fetching latest iOS version...";
+          resolution = await fetchLatestIosBetaVersion();
+        }
+
+        const neededCount = Math.max(
+          MIN_SOFTWARE_FIELD_COUNT,
+          resolution.value.length + 1,
+        );
+        if (softwareField.count < neededCount) {
+          expandSoftwareFieldCapacity(file, neededCount);
+        }
+
         const sanitizedValue = fitSoftwareToField(
-          iosSoftware,
+          resolution.value,
           softwareField.count,
         );
         softwareField.value = sanitizedValue;
