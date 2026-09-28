@@ -6,13 +6,9 @@ import markerShadowUrl from "leaflet/dist/images/marker-shadow.png?inline";
 import ImageWorker from "./imageWorker?worker&inline";
 import {
   AUTHENTIC_SOFTWARE,
-  fetchLatestIosBetaVersion,
-  fetchLatestPixelVersion,
-  fetchLatestSamsungVersion,
   fitSoftwareToField,
   MIN_SOFTWARE_FIELD_COUNT,
   PROGRAM_NAME_PRESETS,
-  type SoftwareResolution,
 } from "./software";
 import {
   CALENDAR_ICON_SVG,
@@ -4239,8 +4235,7 @@ export function renderFields(file: LoadedFile, form: HTMLFormElement) {
         select.appendChild(opt);
       });
 
-      let lastSoftwareFetchId = 0;
-      select.addEventListener("change", async () => {
+      select.addEventListener("change", () => {
         const selectedValue = select.value;
         const selectedOption = select.options[select.selectedIndex];
         const selectedLabel = selectedOption?.textContent ?? "";
@@ -4264,44 +4259,22 @@ export function renderFields(file: LoadedFile, form: HTMLFormElement) {
           selectedValue === AUTHENTIC_SOFTWARE.google;
 
         if (isApple || isSamsung || isGoogle) {
-          const fetchId = ++lastSoftwareFetchId;
-          try {
-            let resolution: SoftwareResolution;
-            if (isApple) {
-              if (status) status.textContent = "Fetching latest iOS version...";
-              resolution = await fetchLatestIosBetaVersion();
-            } else if (isSamsung) {
-              if (status)
-                status.textContent = "Fetching latest Samsung Galaxy version...";
-              resolution = await fetchLatestSamsungVersion();
-            } else {
-              if (status)
-                status.textContent = "Fetching latest Google Pixel version...";
-              resolution = await fetchLatestPixelVersion();
-            }
-
-            if (fetchId !== lastSoftwareFetchId) {
-              return;
-            }
-
-            const neededCount = Math.max(
-              MIN_SOFTWARE_FIELD_COUNT,
-              resolution.value.length + 1,
-            );
-            if (f.count < neededCount) {
-              expandSoftwareFieldCapacity(file, neededCount);
+          const neededCount = Math.max(
+            MIN_SOFTWARE_FIELD_COUNT,
+            selectedValue.length + 1,
+          );
+          if (f.count < neededCount) {
+            if (expandSoftwareFieldCapacity(file, neededCount)) {
               input.maxLength = f.count - 1;
             }
+          }
 
-            const sanitized = fitSoftwareToField(resolution.value, f.count);
-            input.value = sanitized;
-            f.value = sanitized;
-            input.dispatchEvent(new Event("input", { bubbles: true }));
-            if (status) {
-              status.textContent = `Updated Program name to ${sanitized}.`;
-            }
-          } catch (err) {
-            console.error("Failed to fetch latest software version:", err);
+          const sanitized = fitSoftwareToField(selectedValue, f.count);
+          input.value = sanitized;
+          f.value = sanitized;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          if (status) {
+            status.textContent = `Updated Program name to ${sanitized}.`;
           }
         }
       });
@@ -4738,28 +4711,25 @@ async function syncDateTimeFieldsToOriginal(file: LoadedFile) {
           // ignore
         }
 
-        let resolution: SoftwareResolution;
+        let resolvedSoftware: string = AUTHENTIC_SOFTWARE.apple;
         if (deviceMake.includes("samsung")) {
-          status.textContent = "Fetching latest Samsung Galaxy version...";
-          resolution = await fetchLatestSamsungVersion();
+          resolvedSoftware = AUTHENTIC_SOFTWARE.samsung;
         } else if (deviceMake.includes("google")) {
-          status.textContent = "Fetching latest Google Pixel version...";
-          resolution = await fetchLatestPixelVersion();
+          resolvedSoftware = AUTHENTIC_SOFTWARE.google;
         } else {
-          status.textContent = "Fetching latest iOS version...";
-          resolution = await fetchLatestIosBetaVersion();
+          resolvedSoftware = AUTHENTIC_SOFTWARE.apple;
         }
 
         const neededCount = Math.max(
           MIN_SOFTWARE_FIELD_COUNT,
-          resolution.value.length + 1,
+          resolvedSoftware.length + 1,
         );
         if (softwareField.count < neededCount) {
           expandSoftwareFieldCapacity(file, neededCount);
         }
 
         const sanitizedValue = fitSoftwareToField(
-          resolution.value,
+          resolvedSoftware,
           softwareField.count,
         );
         softwareField.value = sanitizedValue;

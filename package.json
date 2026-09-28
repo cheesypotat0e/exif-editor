@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && node scripts/build.mjs",
+    "build:software": "node scripts/fetch-software-versions.mjs",
+    "fetch:software": "node scripts/fetch-software-versions.mjs",
+    "build": "node scripts/fetch-software-versions.mjs && tsc && node scripts/build.mjs",
     "build:cli": "pnpm --filter exif-editor-cli build",
     "cli": "node packages/exif-editor-cli/dist/cli.js",
     "preview": "vite preview",

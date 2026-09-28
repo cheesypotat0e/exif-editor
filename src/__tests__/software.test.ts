@@ -19,6 +19,18 @@ describe("parseLatestIosBetaVersion", () => {
     ["iOS 26.6 beta 2 and iOS 27.0 beta 3", "27.0"],
     ["iPadOS 27.0 beta 4", undefined],
     ["iOS 27.0", undefined],
+    [
+      "<rss><channel><item><title>iOS 27.2 beta 2 (24B5089g)</title></item></channel></rss>",
+      "27.2",
+    ],
+    [
+      "<rss><channel><item><title>iOS 27.0 (24A437)</title></item><item><title>iOS 27.2 beta 2 (24B5089g)</title></item></channel></rss>",
+      "27.2",
+    ],
+    [
+      "<rss><channel><item><title>iPadOS 27.2 beta 2 (24B5089g)</title></item></channel></rss>",
+      undefined,
+    ],
   ])("parses %s", (html, expected) => {
     expect(parseLatestIosBetaVersion(html)).toBe(expected);
   });

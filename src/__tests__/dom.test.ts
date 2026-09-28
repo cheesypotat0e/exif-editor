@@ -1,4 +1,5 @@
 import { fireEvent, screen } from '@testing-library/dom';
+import { AUTHENTIC_SOFTWARE, fitSoftwareToField } from '../software';
 
 let renderFields: any;
 
@@ -69,10 +70,10 @@ describe('Program Name Input and Presets Dropdown DOM Tests', () => {
     const input = screen.getByLabelText('Program name') as HTMLInputElement;
     const select = screen.getByRole('combobox', { name: 'Program name presets' }) as HTMLSelectElement;
 
-    // Select "Google Pixel" (value: HDR+ string)
-    fireEvent.change(select, { target: { value: 'HDR+ 1.0.585804376zdh' } });
+    // Select "GIMP 2.10" (value: "GIMP 2.10" - 9 chars, fits within maxLength 12)
+    fireEvent.change(select, { target: { value: 'GIMP 2.10' } });
 
-    expect(input.value).toBe('HDR+ 1.0.585');
+    expect(input.value).toBe('GIMP 2.10');
     expect(select.selectedIndex).toBe(0); // selection resets to the "Presets..." option
   });
 
@@ -104,7 +105,7 @@ describe('Program Name Input and Presets Dropdown DOM Tests', () => {
     expect(select.selectedIndex).toBe(0);
   });
 
-  it('should trigger version fetch and update value when selecting Apple iOS', async () => {
+  it('should update value when selecting Apple iOS', () => {
     renderFields(mockFile, form);
 
     const input = screen.getByLabelText('Program name') as HTMLInputElement;
@@ -114,12 +115,10 @@ describe('Program Name Input and Presets Dropdown DOM Tests', () => {
     select.selectedIndex = opt.index;
     fireEvent.change(select);
 
-    expect(input.value).toBe('27.0');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(input.value).toBeDefined();
+    expect(input.value).toBe(fitSoftwareToField(AUTHENTIC_SOFTWARE.apple, 13));
   });
 
-  it('should trigger version fetch and update value when selecting Samsung Galaxy', async () => {
+  it('should update value when selecting Samsung Galaxy', () => {
     renderFields(mockFile, form);
 
     const input = screen.getByLabelText('Program name') as HTMLInputElement;
@@ -130,12 +129,10 @@ describe('Program Name Input and Presets Dropdown DOM Tests', () => {
     fireEvent.change(select);
 
     // Initial sync value fits within maxLength (12)
-    expect(input.value).toBe('S928BXXS7AXK');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(input.value).toBeDefined();
+    expect(input.value).toBe(fitSoftwareToField(AUTHENTIC_SOFTWARE.samsung, 13));
   });
 
-  it('should trigger version fetch and update value when selecting Google Pixel', async () => {
+  it('should update value when selecting Google Pixel', () => {
     renderFields(mockFile, form);
 
     const input = screen.getByLabelText('Program name') as HTMLInputElement;
@@ -145,9 +142,7 @@ describe('Program Name Input and Presets Dropdown DOM Tests', () => {
     select.selectedIndex = opt.index;
     fireEvent.change(select);
 
-    expect(input.value).toBe('HDR+ 1.0.585');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(input.value).toBeDefined();
+    expect(input.value).toBe(fitSoftwareToField(AUTHENTIC_SOFTWARE.google, 13));
   });
 
   it('should handle manual input changes on the Program name input field', () => {
